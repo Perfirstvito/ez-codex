@@ -5251,6 +5251,7 @@ mod tests {
             auth_refresh_blocked: false,
             auth_refresh_error: None,
             api_proxy_enabled: false,
+            codex_keepalive_last_at: None,
         };
 
         assert!(account_to_proxy_candidate(account).is_none());
