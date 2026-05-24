@@ -3582,13 +3582,37 @@ fn api_proxy_usage_metadata(
 }
 
 fn api_proxy_usage_model_from_payload(payload: &Value) -> String {
-    payload
-        .get("model")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|model| !model.is_empty())
-        .map(normalize_model_for_client)
+    api_proxy_usage_image_tool_model_from_payload(payload)
+        .or_else(|| {
+            payload
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|model| !model.is_empty())
+                .map(normalize_model_for_client)
+        })
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn api_proxy_usage_image_tool_model_from_payload(payload: &Value) -> Option<String> {
+    payload
+        .get("tools")
+        .and_then(Value::as_array)
+        .and_then(|tools| {
+            tools.iter().find_map(|tool| {
+                let object = tool.as_object()?;
+                if object.get("type").and_then(Value::as_str) != Some("image_generation") {
+                    return None;
+                }
+
+                object
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|model| !model.is_empty())
+                    .map(normalize_model_for_client)
+            })
+        })
 }
 
 fn api_proxy_usage_event(
@@ -5099,6 +5123,7 @@ fn parse_proxy_request_body_limit_mib(value: Option<&str>) -> Option<usize> {
 mod tests {
     use super::account_to_proxy_candidate;
     use super::api_proxy_usage_bucket_seconds;
+    use super::api_proxy_usage_model_from_payload;
     use super::api_proxy_usage_store_has_legacy_private_fields;
     use super::build_api_proxy_usage_stats;
     use super::convert_completed_response_to_chat_completion;
@@ -5305,6 +5330,21 @@ mod tests {
         for series in &stats.series {
             assert_eq!(series.points.len(), gpt5.points.len());
         }
+    }
+
+    #[test]
+    fn api_proxy_usage_prefers_image_tool_model_over_controller_model() {
+        let payload = json!({
+            "model": "gpt-5.5",
+            "tools": [{
+                "type": "image_generation",
+                "model": "gpt-image-1"
+            }]
+        });
+
+        let model = api_proxy_usage_model_from_payload(&payload);
+
+        assert_eq!(model, "gpt-image-1");
     }
 
     #[test]
