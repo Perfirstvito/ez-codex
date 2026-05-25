@@ -769,18 +769,13 @@ function resolveUsageHoverState({
     return null;
   }
 
-  const bucketMidTimestamp =
-    primaryBucket.bucketStartTimestamp +
-    (primaryBucket.bucketEndTimestamp - primaryBucket.bucketStartTimestamp) / 2;
   const bucketStartX =
     plotLeft +
     ((primaryBucket.bucketStartTimestamp - startTimestamp) / Math.max(rangeSeconds, 1)) * (plotRight - plotLeft);
   const bucketEndX =
     plotLeft +
     ((primaryBucket.bucketEndTimestamp - startTimestamp) / Math.max(rangeSeconds, 1)) * (plotRight - plotLeft);
-  const bucketCursorX =
-    plotLeft +
-    ((bucketMidTimestamp - startTimestamp) / Math.max(rangeSeconds, 1)) * (plotRight - plotLeft);
+  const bucketCursorX = primaryBucket.point.x;
 
     const entries = series
       .map((item) => {
@@ -794,7 +789,7 @@ function resolveUsageHoverState({
         if (!bucket) {
           return null;
         }
-        const interpolated = interpolateSeriesAtX(bucketCursorX, item);
+        const interpolated = interpolateSeriesAtX(bucket.point.x, item);
         if (!interpolated) {
           return null;
         }
@@ -1090,11 +1085,19 @@ function ApiProxyUsageChart({
 
     const yDomain = maxValue * 1.12;
     const series = prepared.map((item) => {
-      const bucketPoints = item.metricPoints.map((point) => {
-        const clampedTimestamp = clampUsageValue(point.timestamp, startTimestamp, endTimestamp);
+      const bucketPoints = item.metricPoints.map((point, index) => {
+        const nextPoint = item.metricPoints[index + 1];
+        const bucketStartTimestamp = clampUsageValue(point.timestamp, startTimestamp, endTimestamp);
+        const bucketEndTimestamp = clampUsageValue(
+          nextPoint?.timestamp ?? endTimestamp,
+          startTimestamp,
+          endTimestamp,
+        );
+        const bucketMidTimestamp =
+          bucketStartTimestamp + (bucketEndTimestamp - bucketStartTimestamp) / 2;
         const x =
           margins.left +
-          ((clampedTimestamp - startTimestamp) / Math.max(selectedRangeSeconds, 1)) * plotWidth;
+          ((bucketMidTimestamp - startTimestamp) / Math.max(selectedRangeSeconds, 1)) * plotWidth;
         const y = baselineY - (Math.max(0, point.value) / yDomain) * plotHeight;
         return {
           timestamp: point.timestamp,
@@ -1104,16 +1107,26 @@ function ApiProxyUsageChart({
         };
       });
 
-      const pointValues = [...bucketPoints];
-      const latestPoint = pointValues[pointValues.length - 1];
-      if (latestPoint && latestPoint.timestamp < endTimestamp) {
-        pointValues.push({
-          timestamp: endTimestamp,
-          value: latestPoint.value,
-          x: margins.left + plotWidth,
-          y: latestPoint.y,
-        });
-      }
+      const firstBucket = bucketPoints[0];
+      const lastBucket = bucketPoints[bucketPoints.length - 1];
+      const pointValues =
+        firstBucket && lastBucket
+          ? [
+              {
+                timestamp: startTimestamp,
+                value: firstBucket.value,
+                x: margins.left,
+                y: firstBucket.y,
+              },
+              ...bucketPoints,
+              {
+                timestamp: endTimestamp,
+                value: lastBucket.value,
+                x: margins.left + plotWidth,
+                y: lastBucket.y,
+              },
+            ]
+          : [];
 
       const points = pointValues;
 
