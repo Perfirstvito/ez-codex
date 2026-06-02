@@ -5,6 +5,7 @@ use crate::cli;
 use crate::models::normalize_api_proxy_sequential_five_hour_limit_percent;
 use crate::models::AppSettings;
 use crate::models::AppSettingsPatch;
+use crate::proxy_service::clear_api_proxy_account_cooldowns_for_runtime;
 use crate::proxy_service::sanitize_api_proxy_disabled_models_for_settings;
 use crate::state::AppState;
 use crate::store::load_store;
@@ -38,6 +39,7 @@ pub(crate) async fn update_app_settings_internal(
     patch: AppSettingsPatch,
 ) -> Result<AppSettings, String> {
     let mut launch_at_startup_to_apply = None;
+    let clear_api_proxy_account_cooldowns = patch.api_proxy_account_cooldown_enabled == Some(false);
     let settings = {
         let _guard = state.store_lock.lock().await;
         let mut store = load_store(app)?;
@@ -87,6 +89,9 @@ pub(crate) async fn update_app_settings_internal(
             store.settings.api_proxy_disabled_models =
                 sanitize_api_proxy_disabled_models_for_settings(value);
         }
+        if let Some(value) = patch.api_proxy_account_cooldown_enabled {
+            store.settings.api_proxy_account_cooldown_enabled = value;
+        }
         if let Some(value) = patch.remote_servers {
             store.settings.remote_servers = value;
         }
@@ -104,6 +109,9 @@ pub(crate) async fn update_app_settings_internal(
 
     if let Some(value) = launch_at_startup_to_apply {
         set_system_autostart(app, value)?;
+    }
+    if clear_api_proxy_account_cooldowns {
+        clear_api_proxy_account_cooldowns_for_runtime(&state.api_proxy).await;
     }
 
     Ok(settings)

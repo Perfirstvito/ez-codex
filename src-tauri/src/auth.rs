@@ -10,13 +10,11 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
-use tokio::sync::Mutex;
 
 use crate::app_paths;
 use crate::models::ExtractedAuth;
@@ -418,14 +416,29 @@ pub(crate) fn extract_codex_oauth_tokens(auth_json: &Value) -> Result<CodexOAuth
     })
 }
 
+pub(crate) fn auth_access_token_valid_now(auth_json: &Value) -> bool {
+    let Some(tokens) = auth_token_object(auth_json) else {
+        return false;
+    };
+    let Some(now) = current_unix_seconds() else {
+        return false;
+    };
+
+    tokens
+        .get("access_token")
+        .and_then(Value::as_str)
+        .and_then(jwt_expiration_unix)
+        .map(|exp| exp > now)
+        .unwrap_or(false)
+}
+
 pub(crate) fn auth_tokens_expire_within(auth_json: &Value, lead_time_secs: i64) -> bool {
     let Some(tokens) = auth_token_object(auth_json) else {
         return false;
     };
 
-    let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(duration) => duration.as_secs() as i64,
-        Err(_) => return false,
+    let Some(now) = current_unix_seconds() else {
+        return false;
     };
     let refresh_deadline = now + lead_time_secs.max(0);
 
@@ -456,18 +469,35 @@ pub(crate) fn auth_tokens_need_keepalive_refresh(
         return false;
     }
 
-    let Some(root) = auth_json.as_object() else {
-        return false;
-    };
-    let Some(last_refresh) = root.get("last_refresh").and_then(last_refresh_unix_seconds) else {
+    let Some(last_refresh) = auth_last_refresh_unix_seconds(auth_json) else {
         return true;
     };
-    let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(duration) => duration.as_secs() as i64,
-        Err(_) => return false,
+    let Some(now) = current_unix_seconds() else {
+        return false;
     };
 
     now.saturating_sub(last_refresh) >= max_last_refresh_age_secs
+}
+
+pub(crate) fn auth_last_refresh_unix_seconds(auth_json: &Value) -> Option<i64> {
+    auth_json
+        .as_object()?
+        .get("last_refresh")
+        .and_then(last_refresh_unix_seconds)
+}
+
+pub(crate) fn auth_last_refresh_unix_nanos(auth_json: &Value) -> Option<i128> {
+    auth_json
+        .as_object()?
+        .get("last_refresh")
+        .and_then(last_refresh_unix_nanos)
+}
+
+fn current_unix_seconds() -> Option<i64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_secs() as i64)
 }
 
 /// 使用 auth.json 内的 refresh_token 刷新 ChatGPT OAuth 令牌。
@@ -554,14 +584,6 @@ pub(crate) async fn refresh_chatgpt_auth_tokens(auth_json: &Value) -> Result<Val
 
     update_last_refresh(&mut updated)?;
     Ok(normalize_auth_json_for_codex(updated))
-}
-
-pub(crate) async fn refresh_chatgpt_auth_tokens_serialized(
-    auth_json: &Value,
-    refresh_lock: &Arc<Mutex<()>>,
-) -> Result<Value, String> {
-    let _guard = refresh_lock.lock().await;
-    refresh_chatgpt_auth_tokens(auth_json).await
 }
 
 fn parse_oauth_callback_url(callback_url: &str) -> Result<reqwest::Url, String> {
@@ -781,11 +803,36 @@ fn last_refresh_unix_seconds(value: &Value) -> Option<i64> {
     }
 }
 
+fn last_refresh_unix_nanos(value: &Value) -> Option<i128> {
+    match value {
+        Value::String(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            if let Ok(datetime) = OffsetDateTime::parse(trimmed, &Rfc3339) {
+                return Some(datetime.unix_timestamp_nanos());
+            }
+            trimmed.parse::<i64>().ok().map(timestamp_value_to_nanos)
+        }
+        Value::Number(number) => number.as_i64().map(timestamp_value_to_nanos),
+        _ => None,
+    }
+}
+
 fn timestamp_value_to_secs(timestamp: i64) -> i64 {
     if timestamp.abs() >= 1_000_000_000_000 {
         timestamp / 1_000
     } else {
         timestamp
+    }
+}
+
+fn timestamp_value_to_nanos(timestamp: i64) -> i128 {
+    if timestamp.abs() >= 1_000_000_000_000 {
+        i128::from(timestamp) * 1_000_000
+    } else {
+        i128::from(timestamp) * 1_000_000_000
     }
 }
 

@@ -62,6 +62,7 @@ type ApiProxyPanelProps = {
   savedPort: number;
   loadBalanceMode: ApiProxyLoadBalanceMode;
   sequentialFiveHourLimitPercent: number;
+  accountCooldownEnabled: boolean;
   apiProxySupportedModels: string[];
   apiProxyDisabledModels: string[];
   remoteServers: RemoteServerConfig[];
@@ -92,6 +93,7 @@ type ApiProxyPanelProps = {
   onPersistPort: (port: number) => Promise<void> | void;
   onUpdateLoadBalanceMode: (mode: ApiProxyLoadBalanceMode) => Promise<void> | void;
   onUpdateSequentialFiveHourLimitPercent: (percent: number) => Promise<void> | void;
+  onToggleAccountCooldown: (enabled: boolean) => Promise<void> | void;
   onUpdateApiProxyDisabledModels: (models: string[]) => Promise<void> | void;
   onUpdateRemoteServers: (servers: RemoteServerConfig[]) => void;
   onRefreshRemoteStatus: (server: RemoteServerConfig) => void;
@@ -111,6 +113,24 @@ function copyText(value: string | null) {
     return;
   }
   void navigator.clipboard?.writeText(value).catch(() => {});
+}
+
+function formatCooldownDuration(locale: string, seconds: number) {
+  const safeSeconds = Math.max(0, Math.floor(seconds));
+  const minutes = Math.floor(safeSeconds / 60);
+  const remainder = safeSeconds % 60;
+  if (locale.startsWith("zh")) {
+    return minutes > 0 ? `${minutes}分${String(remainder).padStart(2, "0")}秒` : `${remainder}秒`;
+  }
+  return minutes > 0 ? `${minutes}m ${String(remainder).padStart(2, "0")}s` : `${remainder}s`;
+}
+
+function formatCooldownUntil(locale: string, timestampSec: number) {
+  return new Intl.DateTimeFormat(locale, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(new Date(timestampSec * 1000));
 }
 
 function createRemoteServerId() {
@@ -1605,6 +1625,7 @@ export function ApiProxyPanel({
   savedPort,
   loadBalanceMode,
   sequentialFiveHourLimitPercent,
+  accountCooldownEnabled,
   apiProxySupportedModels,
   apiProxyDisabledModels,
   remoteServers,
@@ -1635,6 +1656,7 @@ export function ApiProxyPanel({
   onPersistPort,
   onUpdateLoadBalanceMode,
   onUpdateSequentialFiveHourLimitPercent,
+  onToggleAccountCooldown,
   onUpdateApiProxyDisabledModels,
   onUpdateRemoteServers,
   onRefreshRemoteStatus,
@@ -1663,8 +1685,10 @@ export function ApiProxyPanel({
   }));
   const busy = starting || stopping;
   const cloudflaredBusy = installingCloudflared || startingCloudflared || stoppingCloudflared;
+  const accountCooldowns = status.accountCooldowns ?? [];
   const [portDraft, setPortDraft] = useState<string | null>(null);
   const [sequentialLimitDraft, setSequentialLimitDraft] = useState<number | null>(null);
+  const [cooldownNow, setCooldownNow] = useState(() => Math.floor(Date.now() / 1000));
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [modelMenuSaving, setModelMenuSaving] = useState(false);
   const [modelMenuDraft, setModelMenuDraft] = useState<string[]>(() =>
@@ -1729,6 +1753,17 @@ export function ApiProxyPanel({
       ),
     [apiProxySupportedModels, normalizedModelSearchQuery],
   );
+
+  useEffect(() => {
+    if (accountCooldowns.length === 0) {
+      return;
+    }
+    setCooldownNow(Math.floor(Date.now() / 1000));
+    const timer = window.setInterval(() => {
+      setCooldownNow(Math.floor(Date.now() / 1000));
+    }, 1_000);
+    return () => window.clearInterval(timer);
+  }, [accountCooldowns.length]);
 
   useEffect(() => {
     if (modelMenuOpen) {
@@ -2262,6 +2297,58 @@ export function ApiProxyPanel({
               </div>
             ) : null}
 
+          </article>
+
+          <article className="proxyDetailCard proxyCooldownCard">
+            <div className="proxyCooldownHeader">
+              <div className="proxyCooldownCopy">
+                <span className="proxyLabel">{proxyCopy.accountCooldownLabel}</span>
+                <p>{proxyCopy.accountCooldownDescription}</p>
+              </div>
+              <label className="themeSwitch" aria-label={proxyCopy.accountCooldownToggleLabel}>
+                <input
+                  type="checkbox"
+                  checked={accountCooldownEnabled}
+                  disabled={savingSettings}
+                  onChange={(event) => {
+                    void onToggleAccountCooldown(event.target.checked);
+                  }}
+                />
+                <span className="themeSwitchTrack" aria-hidden="true">
+                  <span className="themeSwitchThumb" />
+                </span>
+                <span className="themeSwitchText">
+                  {accountCooldownEnabled
+                    ? proxyCopy.accountCooldownEnabled
+                    : proxyCopy.accountCooldownDisabled}
+                </span>
+              </label>
+            </div>
+
+            {accountCooldowns.length > 0 ? (
+              <div className="proxyCooldownList">
+                {accountCooldowns.map((cooldown) => (
+                  <div className="proxyCooldownRow" key={cooldown.accountKey}>
+                    <div className="proxyCooldownIdentity">
+                      <strong>{cooldown.label}</strong>
+                      <span>{cooldown.accountKey}</span>
+                    </div>
+                    <div className="proxyCooldownMeta">
+                      <span>
+                        {formatCooldownDuration(locale, cooldown.until - cooldownNow)}
+                        {" · "}
+                        {proxyCopy.accountCooldownUntilLabel}
+                        {" "}
+                        {formatCooldownUntil(locale, cooldown.until)}
+                      </span>
+                      <p>{cooldown.reason || proxyCopy.none}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p>{proxyCopy.accountCooldownEmpty}</p>
+            )}
           </article>
 
           <article className="proxyDetailCard proxyModelCard">

@@ -16,6 +16,10 @@ pub(crate) fn default_api_proxy_enabled() -> bool {
     true
 }
 
+pub(crate) fn default_api_proxy_account_cooldown_enabled() -> bool {
+    true
+}
+
 pub(crate) fn default_api_proxy_sequential_five_hour_limit_percent() -> f64 {
     80.0
 }
@@ -252,6 +256,17 @@ pub(crate) struct ApiProxyStatus {
     pub(crate) active_account_id: Option<String>,
     pub(crate) active_account_label: Option<String>,
     pub(crate) last_error: Option<String>,
+    pub(crate) account_cooldowns: Vec<ApiProxyAccountCooldown>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ApiProxyAccountCooldown {
+    pub(crate) account_key: String,
+    pub(crate) label: String,
+    pub(crate) category: String,
+    pub(crate) reason: String,
+    pub(crate) until: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -448,6 +463,8 @@ pub(crate) struct AppSettings {
     pub(crate) api_proxy_sequential_five_hour_limit_percent: f64,
     #[serde(default)]
     pub(crate) api_proxy_disabled_models: Vec<String>,
+    #[serde(default = "default_api_proxy_account_cooldown_enabled")]
+    pub(crate) api_proxy_account_cooldown_enabled: bool,
     #[serde(default)]
     pub(crate) api_proxy_sequential_account_key: Option<String>,
     pub(crate) remote_servers: Vec<RemoteServerConfig>,
@@ -475,6 +492,7 @@ impl Default for AppSettings {
             api_proxy_sequential_five_hour_limit_percent:
                 default_api_proxy_sequential_five_hour_limit_percent(),
             api_proxy_disabled_models: Vec::new(),
+            api_proxy_account_cooldown_enabled: default_api_proxy_account_cooldown_enabled(),
             api_proxy_sequential_account_key: None,
             remote_servers: Vec::new(),
             api_proxy_api_key: None,
@@ -501,6 +519,7 @@ pub(crate) struct AppSettingsPatch {
     pub(crate) api_proxy_load_balance_mode: Option<ApiProxyLoadBalanceMode>,
     pub(crate) api_proxy_sequential_five_hour_limit_percent: Option<f64>,
     pub(crate) api_proxy_disabled_models: Option<Vec<String>>,
+    pub(crate) api_proxy_account_cooldown_enabled: Option<bool>,
     pub(crate) remote_servers: Option<Vec<RemoteServerConfig>>,
     pub(crate) locale: Option<AppLocale>,
     pub(crate) skipped_update_version: Option<Option<String>>,
@@ -666,12 +685,6 @@ fn merge_duplicate_account_variant(left: StoredAccount, right: StoredAccount) ->
     if preferred.usage_error.is_none() {
         preferred.usage_error = alternate.usage_error.clone();
     }
-    if !preferred.auth_refresh_blocked && alternate.auth_refresh_blocked {
-        preferred.auth_refresh_blocked = true;
-    }
-    if preferred.auth_refresh_error.is_none() {
-        preferred.auth_refresh_error = alternate.auth_refresh_error.clone();
-    }
     preferred.api_proxy_enabled = preferred.api_proxy_enabled && alternate.api_proxy_enabled;
     preferred.codex_keepalive_last_at = match (
         preferred.codex_keepalive_last_at,
@@ -683,6 +696,8 @@ fn merge_duplicate_account_variant(left: StoredAccount, right: StoredAccount) ->
     };
     if preferred.auth_json.is_null() && !alternate.auth_json.is_null() {
         preferred.auth_json = alternate.auth_json.clone();
+        preferred.auth_refresh_blocked = alternate.auth_refresh_blocked;
+        preferred.auth_refresh_error = alternate.auth_refresh_error.clone();
     }
     if preferred.api_base_url.is_none() {
         preferred.api_base_url = alternate.api_base_url.clone();
@@ -720,8 +735,8 @@ fn merge_duplicate_account_variant(left: StoredAccount, right: StoredAccount) ->
 
 fn duplicate_account_merge_score(account: &StoredAccount) -> (u8, u8, u8, u8, i64, i64) {
     (
-        u8::from(account.usage.is_some() && account.usage_error.is_none()),
         u8::from(!account.auth_refresh_blocked),
+        u8::from(account.usage.is_some() && account.usage_error.is_none()),
         u8::from(account.resolved_plan_type().is_some()),
         u8::from(
             account
@@ -853,6 +868,65 @@ mod tests {
         assert!(changed);
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].id, "team");
+    }
+
+    #[test]
+    fn dedupe_account_variants_keeps_healthy_auth_state_atomic() {
+        let mut blocked = stored_account(
+            "blocked",
+            "blocked",
+            "account-1",
+            Some("team"),
+            Some("team"),
+            200,
+        );
+        blocked.auth_json = json!({ "kind": "blocked" });
+        blocked.auth_refresh_blocked = true;
+        blocked.auth_refresh_error = Some("授权过期，请重新登录授权。".to_string());
+        let mut healthy =
+            stored_account("healthy", "healthy", "account-1", Some("team"), None, 100);
+        healthy.auth_json = json!({ "kind": "healthy" });
+        let mut accounts = vec![blocked, healthy];
+
+        let changed = dedupe_account_variants(&mut accounts);
+
+        assert!(changed);
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].id, "healthy");
+        assert_eq!(accounts[0].auth_json, json!({ "kind": "healthy" }));
+        assert!(!accounts[0].auth_refresh_blocked);
+        assert_eq!(accounts[0].auth_refresh_error, None);
+        assert!(accounts[0].usage.is_some());
+    }
+
+    #[test]
+    fn dedupe_account_variants_copies_fallback_auth_state_atomically() {
+        let mut healthy = stored_account(
+            "healthy",
+            "healthy",
+            "account-1",
+            Some("team"),
+            Some("team"),
+            200,
+        );
+        healthy.auth_json = serde_json::Value::Null;
+        let mut blocked =
+            stored_account("blocked", "blocked", "account-1", Some("team"), None, 100);
+        blocked.auth_json = json!({ "kind": "blocked" });
+        blocked.auth_refresh_blocked = true;
+        blocked.auth_refresh_error = Some("授权过期，请重新登录授权。".to_string());
+        let mut accounts = vec![healthy, blocked];
+
+        let changed = dedupe_account_variants(&mut accounts);
+
+        assert!(changed);
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].auth_json, json!({ "kind": "blocked" }));
+        assert!(accounts[0].auth_refresh_blocked);
+        assert_eq!(
+            accounts[0].auth_refresh_error.as_deref(),
+            Some("授权过期，请重新登录授权。")
+        );
     }
 
     #[test]

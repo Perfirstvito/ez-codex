@@ -230,6 +230,7 @@ function App() {
                             savedPort={settings.apiProxyPort}
                             loadBalanceMode={settings.apiProxyLoadBalanceMode}
                             sequentialFiveHourLimitPercent={settings.apiProxySequentialFiveHourLimitPercent}
+                            accountCooldownEnabled={settings.apiProxyAccountCooldownEnabled}
                             apiProxySupportedModels={apiProxySupportedModels}
                             apiProxyDisabledModels={settings.apiProxyDisabledModels}
                             remoteServers={settings.remoteServers}
@@ -276,6 +277,11 @@ function App() {
                                     { apiProxySequentialFiveHourLimitPercent: percent },
                                     { silent: true, keepInteractive: true },
                                 )}
+                            onToggleAccountCooldown={(enabled) =>
+                                updateSettings(
+                                    { apiProxyAccountCooldownEnabled: enabled },
+                                    { silent: true, keepInteractive: true },
+                                ).then(() => loadApiProxyStatus())}
                             onUpdateApiProxyDisabledModels={(models) =>
                                 updateSettings(
                                     { apiProxyDisabledModels: models },

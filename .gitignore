@@ -28,4 +28,5 @@ push.sh
 release/
 debug/
 src-tauri/gen/
+src-tauri/proxyd/target/
 .dev-runtime/

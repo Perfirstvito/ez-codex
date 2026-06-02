@@ -131,6 +131,15 @@ export type ApiProxyStatus = {
   activeAccountId: string | null;
   activeAccountLabel: string | null;
   lastError: string | null;
+  accountCooldowns: ApiProxyAccountCooldown[];
+};
+
+export type ApiProxyAccountCooldown = {
+  accountKey: string;
+  label: string;
+  category: string;
+  reason: string;
+  until: number;
 };
 
 export type ApiProxyUsageRange = "1h" | "24h" | "7d" | "14d" | "30d";
@@ -279,6 +288,7 @@ export type AppSettings = {
   apiProxyLoadBalanceMode: ApiProxyLoadBalanceMode;
   apiProxySequentialFiveHourLimitPercent: number;
   apiProxyDisabledModels: string[];
+  apiProxyAccountCooldownEnabled: boolean;
   remoteServers: RemoteServerConfig[];
   locale: AppLocale;
   skippedUpdateVersion: string | null;

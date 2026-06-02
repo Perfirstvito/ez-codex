@@ -2,17 +2,23 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 
+use serde_json::Value;
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 #[cfg(feature = "desktop")]
 use tauri::AppHandle;
 
 use crate::app_paths;
+use crate::auth::account_group_key;
 use crate::auth::account_variant_key;
+use crate::auth::auth_last_refresh_unix_nanos;
 use crate::auth::current_auth_account_key;
 use crate::auth::extract_auth;
 use crate::auth::read_current_codex_auth_optional;
+use crate::auth::refresh_chatgpt_auth_tokens;
 use crate::auth::write_active_codex_auth;
 use crate::models::dedupe_account_variants;
 use crate::models::AccountSourceKind;
@@ -190,10 +196,125 @@ pub(crate) fn sync_current_auth_account_on_startup_in_path(path: &Path) -> Resul
     Ok(())
 }
 
-pub(crate) fn update_account_group_refresh_state_in_path(
+struct LatestAccountGroupAuthState {
+    auth_json: Value,
+    auth_refresh_blocked: bool,
+    auth_refresh_error: Option<String>,
+}
+
+pub(crate) fn update_account_group_refresh_state_if_auth_matches_in_path(
     path: &Path,
     account_key: &str,
-    auth_json: Option<&serde_json::Value>,
+    expected_auth_json: &Value,
+    auth_json: Option<&Value>,
+    auth_refresh_blocked: bool,
+    auth_refresh_error: Option<&str>,
+    updated_at: i64,
+    sync_current_auth: bool,
+) -> Result<bool, String> {
+    update_account_group_refresh_state_matching_auth_in_path(
+        path,
+        account_key,
+        Some(expected_auth_json),
+        auth_json,
+        auth_refresh_blocked,
+        auth_refresh_error,
+        updated_at,
+        sync_current_auth,
+    )
+}
+
+pub(crate) async fn refresh_account_group_auth_tokens_in_path(
+    path: &Path,
+    account_key: &str,
+    expected_auth_json: &Value,
+    store_lock: &Arc<Mutex<()>>,
+    auth_refresh_lock: &Arc<Mutex<()>>,
+    sync_current_auth: bool,
+) -> Result<Value, String> {
+    let _refresh_guard = auth_refresh_lock.lock().await;
+
+    let latest_auth_state = {
+        let _store_guard = store_lock.lock().await;
+        let latest_auth_state = latest_account_group_auth_state_in_path(path, account_key)?;
+        if sync_current_auth {
+            if let Some(current_auth_json) = sync_newer_current_auth_json_in_path(
+                path,
+                account_key,
+                &latest_auth_state.auth_json,
+            )? {
+                return Ok(current_auth_json);
+            }
+        }
+        latest_account_group_auth_state_in_path(path, account_key)?
+    };
+    if latest_auth_state.auth_refresh_blocked {
+        return Err(latest_auth_state
+            .auth_refresh_error
+            .unwrap_or_else(|| "授权过期，请重新登录授权。".to_string()));
+    }
+    if latest_auth_state.auth_json != *expected_auth_json {
+        return Ok(latest_auth_state.auth_json);
+    }
+
+    let refreshed_auth_json = match refresh_chatgpt_auth_tokens(expected_auth_json).await {
+        Ok(refreshed_auth_json) => refreshed_auth_json,
+        Err(refresh_error) => {
+            let _store_guard = store_lock.lock().await;
+            let latest_auth_state = latest_account_group_auth_state_in_path(path, account_key)?;
+            if latest_auth_state.auth_json != *expected_auth_json {
+                return latest_account_group_auth_result(latest_auth_state);
+            }
+            if sync_current_auth {
+                if let Some(current_auth_json) = sync_newer_current_auth_json_in_path(
+                    path,
+                    account_key,
+                    &latest_auth_state.auth_json,
+                )? {
+                    return Ok(current_auth_json);
+                }
+            }
+            let latest_auth_state = latest_account_group_auth_state_in_path(path, account_key)?;
+            if latest_auth_state.auth_json != *expected_auth_json {
+                return latest_account_group_auth_result(latest_auth_state);
+            }
+            return Err(refresh_error);
+        }
+    };
+    let _store_guard = store_lock.lock().await;
+    let latest_auth_state = latest_account_group_auth_state_in_path(path, account_key)?;
+    if latest_auth_state.auth_json != *expected_auth_json {
+        return latest_account_group_auth_result(latest_auth_state);
+    }
+    if sync_current_auth {
+        if let Some(current_auth_json) =
+            sync_newer_current_auth_json_in_path(path, account_key, &latest_auth_state.auth_json)?
+        {
+            return Ok(current_auth_json);
+        }
+    }
+    let changed = update_account_group_refresh_state_if_auth_matches_in_path(
+        path,
+        account_key,
+        expected_auth_json,
+        Some(&refreshed_auth_json),
+        false,
+        None,
+        now_unix_seconds(),
+        sync_current_auth,
+    )?;
+    if changed {
+        return Ok(refreshed_auth_json);
+    }
+
+    latest_account_group_auth_result(latest_account_group_auth_state_in_path(path, account_key)?)
+}
+
+fn update_account_group_refresh_state_matching_auth_in_path(
+    path: &Path,
+    account_key: &str,
+    expected_auth_json: Option<&Value>,
+    auth_json: Option<&Value>,
     auth_refresh_blocked: bool,
     auth_refresh_error: Option<&str>,
     updated_at: i64,
@@ -207,6 +328,9 @@ pub(crate) fn update_account_group_refresh_state_in_path(
         .iter_mut()
         .filter(|account| account.account_key() == account_key)
     {
+        if expected_auth_json.is_some_and(|expected| account.auth_json != *expected) {
+            continue;
+        }
         if let Some(value) = auth_json {
             account.auth_json = value.clone();
         }
@@ -233,6 +357,83 @@ pub(crate) fn update_account_group_refresh_state_in_path(
     }
 
     Ok(true)
+}
+
+fn latest_account_group_auth_state_in_path(
+    path: &Path,
+    account_key: &str,
+) -> Result<LatestAccountGroupAuthState, String> {
+    load_store_from_path(path)?
+        .accounts
+        .into_iter()
+        .filter(|account| account.account_key() == account_key)
+        .max_by_key(|account| (!account.auth_refresh_blocked, account.updated_at))
+        .map(|account| LatestAccountGroupAuthState {
+            auth_json: account.auth_json,
+            auth_refresh_blocked: account.auth_refresh_blocked,
+            auth_refresh_error: account.auth_refresh_error,
+        })
+        .ok_or_else(|| format!("找不到要刷新登录令牌的账号: {account_key}"))
+}
+
+fn latest_account_group_auth_result(state: LatestAccountGroupAuthState) -> Result<Value, String> {
+    if state.auth_refresh_blocked {
+        return Err(state
+            .auth_refresh_error
+            .unwrap_or_else(|| "授权过期，请重新登录授权。".to_string()));
+    }
+
+    Ok(state.auth_json)
+}
+
+fn current_auth_json_for_account_group(account_key: &str) -> Option<Value> {
+    let auth_json = read_current_codex_auth_optional().ok().flatten()?;
+    let extracted = extract_auth(&auth_json).ok()?;
+    let current_account_key = account_group_key(&extracted.principal_id, &extracted.account_id);
+    (current_account_key == account_key).then_some(auth_json)
+}
+
+fn newer_current_auth_json_for_account_group(
+    account_key: &str,
+    reference_auth_json: &Value,
+) -> Option<Value> {
+    let current_auth_json = current_auth_json_for_account_group(account_key)?;
+    (current_auth_json != *reference_auth_json
+        && auth_json_is_strictly_newer(&current_auth_json, reference_auth_json))
+    .then_some(current_auth_json)
+}
+
+fn sync_newer_current_auth_json_in_path(
+    path: &Path,
+    account_key: &str,
+    reference_auth_json: &Value,
+) -> Result<Option<Value>, String> {
+    let Some(current_auth_json) =
+        newer_current_auth_json_for_account_group(account_key, reference_auth_json)
+    else {
+        return Ok(None);
+    };
+    let changed = update_account_group_refresh_state_if_auth_matches_in_path(
+        path,
+        account_key,
+        reference_auth_json,
+        Some(&current_auth_json),
+        false,
+        None,
+        now_unix_seconds(),
+        false,
+    )?;
+    Ok(changed.then_some(current_auth_json))
+}
+
+fn auth_json_is_strictly_newer(candidate: &Value, reference: &Value) -> bool {
+    match (
+        auth_last_refresh_unix_nanos(candidate),
+        auth_last_refresh_unix_nanos(reference),
+    ) {
+        (Some(candidate), Some(reference)) => candidate > reference,
+        _ => false,
+    }
 }
 
 #[cfg(feature = "desktop")]
@@ -590,8 +791,11 @@ fn backup_corrupted_store_file(path: &Path, raw: &str) -> Result<PathBuf, String
 
 #[cfg(test)]
 mod tests {
+    use super::auth_json_is_strictly_newer;
     use super::load_store_from_path;
+    use super::refresh_account_group_auth_tokens_in_path;
     use super::save_store_to_path;
+    use super::update_account_group_refresh_state_if_auth_matches_in_path;
     use super::LAST_GOOD_BACKUP_FILE_NAME;
     use super::PREVIOUS_GOOD_BACKUP_FILE_NAME;
     use crate::models::AccountSourceKind;
@@ -600,6 +804,8 @@ mod tests {
     use serde_json::json;
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
     use uuid::Uuid;
 
     fn temp_dir() -> PathBuf {
@@ -823,5 +1029,93 @@ mod tests {
         assert!(auth_contents.contains("sk-test"));
         assert!(config_contents.contains("https://example.test/v1"));
         assert!(config_contents.contains("gpt-5.5-codex"));
+    }
+
+    #[tokio::test]
+    async fn stale_refresh_request_reuses_latest_stored_auth_without_refreshing_again() {
+        let dir = temp_dir();
+        let store_path = dir.join("accounts.json");
+        let mut store = sample_store("latest", "workspace-1", 20);
+        store.accounts[0].auth_json = json!({ "kind": "latest" });
+        let account_key = store.accounts[0].account_key();
+        save_store_to_path(&store_path, &store).expect("save store");
+
+        let refreshed = refresh_account_group_auth_tokens_in_path(
+            &store_path,
+            &account_key,
+            &json!({ "kind": "stale" }),
+            &Arc::new(Mutex::new(())),
+            &Arc::new(Mutex::new(())),
+            false,
+        )
+        .await
+        .expect("stale caller should reuse latest auth");
+
+        assert_eq!(refreshed, json!({ "kind": "latest" }));
+    }
+
+    #[test]
+    fn stale_refresh_failure_does_not_block_newer_auth() {
+        let dir = temp_dir();
+        let store_path = dir.join("accounts.json");
+        let mut store = sample_store("latest", "workspace-1", 20);
+        store.accounts[0].auth_json = json!({ "kind": "latest" });
+        let account_key = store.accounts[0].account_key();
+        save_store_to_path(&store_path, &store).expect("save store");
+
+        let changed = update_account_group_refresh_state_if_auth_matches_in_path(
+            &store_path,
+            &account_key,
+            &json!({ "kind": "stale" }),
+            None,
+            true,
+            Some("授权过期，请重新登录授权。"),
+            30,
+            false,
+        )
+        .expect("conditional update should complete");
+        let loaded = load_store_from_path(&store_path).expect("load store");
+
+        assert!(!changed);
+        assert_eq!(loaded.accounts[0].auth_json, json!({ "kind": "latest" }));
+        assert!(!loaded.accounts[0].auth_refresh_blocked);
+        assert_eq!(loaded.accounts[0].auth_refresh_error, None);
+    }
+
+    #[tokio::test]
+    async fn blocked_auth_is_not_refreshed_again() {
+        let dir = temp_dir();
+        let store_path = dir.join("accounts.json");
+        let mut store = sample_store("blocked", "workspace-1", 20);
+        store.accounts[0].auth_json = json!({ "kind": "blocked" });
+        store.accounts[0].auth_refresh_blocked = true;
+        store.accounts[0].auth_refresh_error = Some("授权过期，请重新登录授权。".to_string());
+        let account_key = store.accounts[0].account_key();
+        save_store_to_path(&store_path, &store).expect("save store");
+
+        let error = refresh_account_group_auth_tokens_in_path(
+            &store_path,
+            &account_key,
+            &json!({ "kind": "blocked" }),
+            &Arc::new(Mutex::new(())),
+            &Arc::new(Mutex::new(())),
+            false,
+        )
+        .await
+        .expect_err("blocked auth should not be refreshed");
+
+        assert_eq!(error, "授权过期，请重新登录授权。");
+    }
+
+    #[test]
+    fn active_auth_only_replaces_store_auth_when_last_refresh_is_strictly_newer() {
+        let older = json!({ "last_refresh": "2026-06-03T10:00:00.100Z" });
+        let newer = json!({ "last_refresh": "2026-06-03T10:00:00.200Z" });
+        let unknown = json!({ "kind": "without-last-refresh" });
+
+        assert!(auth_json_is_strictly_newer(&newer, &older));
+        assert!(!auth_json_is_strictly_newer(&older, &newer));
+        assert!(!auth_json_is_strictly_newer(&newer, &unknown));
+        assert!(!auth_json_is_strictly_newer(&unknown, &older));
     }
 }

@@ -34,7 +34,7 @@ import type {
 } from "../types/app";
 import { pickBestSmartSwitchAccount, sortAccountsByRemaining } from "../utils/accountRanking";
 
-const REFRESH_MS = 30_000;
+const REFRESH_MS = 3 * 60_000;
 const TOKEN_USAGE_REFRESH_MS = 60_000;
 const EDITOR_SCAN_MS = 60_000;
 const UPDATE_CHECK_MS = 60 * 60 * 1000;
@@ -65,6 +65,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   apiProxyLoadBalanceMode: "average",
   apiProxySequentialFiveHourLimitPercent: 80,
   apiProxyDisabledModels: [],
+  apiProxyAccountCooldownEnabled: true,
   remoteServers: [],
   locale: DEFAULT_LOCALE,
   skippedUpdateVersion: null,
@@ -79,6 +80,7 @@ const DEFAULT_API_PROXY_STATUS: ApiProxyStatus = {
   activeAccountId: null,
   activeAccountLabel: null,
   lastError: null,
+  accountCooldowns: [],
 };
 const DEFAULT_CLOUDFLARED_STATUS: CloudflaredStatus = {
   installed: false,
@@ -287,6 +289,10 @@ export function useCodexController() {
     (status: ApiProxyStatus): ApiProxyStatus => ({
       ...status,
       lastError: status.lastError ? localizeError(status.lastError) : null,
+      accountCooldowns: (status.accountCooldowns ?? []).map((cooldown) => ({
+        ...cooldown,
+        reason: cooldown.reason ? localizeError(cooldown.reason) : cooldown.reason,
+      })),
     }),
     [localizeError],
   );

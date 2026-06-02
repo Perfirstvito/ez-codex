@@ -192,6 +192,13 @@ export type MessageCatalog = {
     loadBalanceSequential: string;
     sequentialFiveHourLimitLabel: string;
     sequentialFiveHourLimitDescription: string;
+    accountCooldownLabel: string;
+    accountCooldownDescription: string;
+    accountCooldownToggleLabel: string;
+    accountCooldownEnabled: string;
+    accountCooldownDisabled: string;
+    accountCooldownEmpty: string;
+    accountCooldownUntilLabel: string;
     modelMenuLabel: string;
     modelMenuDescription: string;
     modelMenuOpen: string;

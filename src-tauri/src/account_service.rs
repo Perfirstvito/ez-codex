@@ -23,7 +23,6 @@ use crate::auth::normalize_imported_auth_json;
 use crate::auth::normalize_plan_type_key;
 use crate::auth::read_current_codex_auth;
 use crate::auth::read_current_codex_auth_optional;
-use crate::auth::refresh_chatgpt_auth_tokens_serialized;
 use crate::models::dedupe_account_variants;
 use crate::models::AccountSourceKind;
 use crate::models::AccountSummary;
@@ -38,8 +37,9 @@ use crate::profile_files;
 use crate::state::AppState;
 use crate::store::account_store_path_from_data_dir;
 use crate::store::load_store;
+use crate::store::refresh_account_group_auth_tokens_in_path;
 use crate::store::save_store;
-use crate::store::update_account_group_refresh_state_in_path;
+use crate::store::update_account_group_refresh_state_if_auth_matches_in_path;
 use crate::usage::fetch_usage_snapshot;
 use crate::usage::resolve_chatgpt_base_origin;
 use crate::utils::now_unix_seconds;
@@ -53,6 +53,7 @@ const AUTH_EXPIRED_NOTICE: &str = "授权过期，请重新登录授权。";
 const EXPORT_ARCHIVE_ENTRY_NAME: &str = "accounts.json";
 const KEEPALIVE_REFRESH_WINDOW_SECS: i64 = 10 * 60;
 const KEEPALIVE_MAX_LAST_REFRESH_AGE_SECS: i64 = 6 * 60 * 60;
+const USAGE_REFRESH_SUCCESS_TTL_SECS: i64 = 3 * 60;
 const CODEX_KEEPALIVE_INTERVAL_SECS: i64 = 5 * 60 * 60;
 const CODEX_KEEPALIVE_TIMEOUT_SECS: u64 = 45;
 const CODEX_KEEPALIVE_MODEL: &str = "gpt-5.3-codex";
@@ -438,6 +439,8 @@ struct RefreshTarget {
     auth_refresh_error: Option<String>,
     updated_at: i64,
     codex_keepalive_last_at: Option<i64>,
+    usage: Option<UsageSnapshot>,
+    usage_error: Option<String>,
 }
 
 #[derive(Debug)]
@@ -447,6 +450,7 @@ struct RefreshOutcome {
     updated_at: i64,
     auth_plan_type: Option<String>,
     auth_email: Option<String>,
+    source_auth_json: serde_json::Value,
     auth_json: serde_json::Value,
     auth_is_current: bool,
     auth_refreshed: bool,
@@ -496,34 +500,7 @@ pub(crate) async fn refresh_all_usage_internal(
                 continue;
             };
 
-            account.updated_at = outcome.updated_at;
-            account.auth_json = outcome.auth_json.clone();
-            account.auth_refresh_blocked = outcome.auth_refresh_blocked;
-            account.auth_refresh_error = outcome.auth_refresh_error.clone();
-            account.codex_keepalive_last_at = outcome.codex_keepalive_last_at;
-            account.email = outcome.auth_email.clone().or(account.email.clone());
-            let preferred_auth_plan_type = if outcome.auth_is_current || outcome.auth_refreshed {
-                outcome.auth_plan_type.clone()
-            } else {
-                outcome.auth_plan_type.clone().or(account.plan_type.clone())
-            };
-            if let Some(snapshot) = outcome.usage.clone() {
-                let mut resolved_snapshot = snapshot;
-                let resolved_plan_type = preferred_auth_plan_type
-                    .clone()
-                    .or(resolved_snapshot.plan_type.clone());
-                resolved_snapshot.plan_type = resolved_plan_type.clone();
-                account.plan_type = resolved_plan_type;
-                account.usage = Some(resolved_snapshot);
-            }
-            if let Some(err) = outcome.usage_error.clone() {
-                if preferred_auth_plan_type.is_some() {
-                    account.plan_type = preferred_auth_plan_type;
-                }
-                account.usage_error = Some(err);
-            } else if outcome.usage.is_some() {
-                account.usage_error = None;
-            }
+            apply_refresh_outcome(account, outcome);
         }
 
         dedupe_account_variants(&mut latest_store.accounts);
@@ -556,6 +533,56 @@ pub(crate) async fn refresh_all_usage_internal(
     Ok(summaries)
 }
 
+fn apply_refresh_outcome(account: &mut StoredAccount, outcome: &RefreshOutcome) {
+    account.updated_at = account.updated_at.max(outcome.updated_at);
+    let can_apply_auth_state =
+        account.auth_json == outcome.source_auth_json || account.auth_json == outcome.auth_json;
+    if can_apply_auth_state {
+        account.auth_json = outcome.auth_json.clone();
+        account.auth_refresh_blocked = outcome.auth_refresh_blocked;
+        account.auth_refresh_error = outcome.auth_refresh_error.clone();
+    }
+    account.codex_keepalive_last_at = match (
+        account.codex_keepalive_last_at,
+        outcome.codex_keepalive_last_at,
+    ) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    };
+    account.email = outcome.auth_email.clone().or(account.email.clone());
+    let preferred_auth_plan_type =
+        if can_apply_auth_state && (outcome.auth_is_current || outcome.auth_refreshed) {
+            outcome.auth_plan_type.clone()
+        } else {
+            account.plan_type.clone().or(outcome.auth_plan_type.clone())
+        };
+    if let Some(snapshot) = outcome.usage.clone() {
+        let should_apply_usage = account
+            .usage
+            .as_ref()
+            .map(|current| snapshot.fetched_at >= current.fetched_at)
+            .unwrap_or(true);
+        if should_apply_usage {
+            let mut resolved_snapshot = snapshot;
+            let resolved_plan_type = preferred_auth_plan_type
+                .clone()
+                .or(resolved_snapshot.plan_type.clone());
+            resolved_snapshot.plan_type = resolved_plan_type.clone();
+            account.plan_type = resolved_plan_type;
+            account.usage = Some(resolved_snapshot);
+        }
+    }
+    if let Some(err) = outcome.usage_error.clone().filter(|_| can_apply_auth_state) {
+        if preferred_auth_plan_type.is_some() {
+            account.plan_type = preferred_auth_plan_type;
+        }
+        account.usage_error = Some(err);
+    } else if outcome.usage.is_some() {
+        account.usage_error = None;
+    }
+}
+
 fn build_refresh_targets(
     accounts: Vec<StoredAccount>,
     current_auth_override: Option<&(String, serde_json::Value)>,
@@ -583,6 +610,8 @@ fn build_refresh_targets(
             auth_refresh_error: account.auth_refresh_error.clone(),
             updated_at: account.updated_at,
             codex_keepalive_last_at: account.codex_keepalive_last_at,
+            usage: account.usage.clone(),
+            usage_error: account.usage_error.clone(),
         };
 
         match targets_by_account_key.get_mut(&account_key) {
@@ -620,12 +649,52 @@ fn should_replace_refresh_target(existing: &RefreshTarget, candidate: &RefreshTa
     candidate.updated_at > existing.updated_at
 }
 
+fn should_use_cached_usage_for_automatic_refresh(
+    target: &RefreshTarget,
+    force_auth_refresh: bool,
+    now: i64,
+) -> bool {
+    if force_auth_refresh || target.usage_error.is_some() {
+        return false;
+    }
+
+    target
+        .usage
+        .as_ref()
+        .map(|usage| now.saturating_sub(usage.fetched_at) < USAGE_REFRESH_SUCCESS_TTL_SECS)
+        .unwrap_or(false)
+}
+
 async fn refresh_usage_for_target(
     app: &AppHandle,
     state: &AppState,
     target: &RefreshTarget,
     force_auth_refresh: bool,
 ) -> RefreshOutcome {
+    let now = now_unix_seconds();
+    if should_use_cached_usage_for_automatic_refresh(target, force_auth_refresh, now) {
+        let extracted = extract_auth(&target.auth_json);
+        let (auth_plan_type, auth_email) = match &extracted {
+            Ok(auth) => (auth.plan_type.clone(), auth.email.clone()),
+            Err(_) => (None, None),
+        };
+
+        return RefreshOutcome {
+            usage: target.usage.clone(),
+            usage_error: None,
+            updated_at: target.updated_at,
+            auth_plan_type,
+            auth_email,
+            source_auth_json: target.auth_json.clone(),
+            auth_json: target.auth_json.clone(),
+            auth_is_current: target.auth_is_current,
+            auth_refreshed: false,
+            auth_refresh_blocked: target.auth_refresh_blocked,
+            auth_refresh_error: target.auth_refresh_error.clone(),
+            codex_keepalive_last_at: target.codex_keepalive_last_at,
+        };
+    }
+
     let mut working_auth_json = target.auth_json.clone();
     let mut refresh_error: Option<String> = None;
     let mut auth_refreshed = false;
@@ -640,32 +709,20 @@ async fn refresh_usage_for_target(
             KEEPALIVE_MAX_LAST_REFRESH_AGE_SECS,
         )
     {
-        match refresh_chatgpt_auth_tokens_serialized(&working_auth_json, &state.auth_refresh_lock)
-            .await
+        match refresh_account_auth_tokens(app, state, &target.account_key, &working_auth_json).await
         {
             Ok(refreshed) => {
                 working_auth_json = refreshed;
                 auth_refreshed = true;
                 auth_refresh_blocked = false;
                 auth_refresh_error = None;
-                if let Err(err) = persist_account_refresh_state(
-                    app,
-                    state,
-                    &target.account_key,
-                    Some(&working_auth_json),
-                    false,
-                    None,
-                )
-                .await
-                {
-                    refresh_error = Some(err);
-                }
             }
             Err(err) => {
                 handle_refresh_failure(
                     app,
                     state,
                     &target.account_key,
+                    &working_auth_json,
                     &err,
                     &mut auth_refresh_blocked,
                     &mut auth_refresh_error,
@@ -683,26 +740,13 @@ async fn refresh_usage_for_target(
     };
 
     if !auth_refresh_blocked && should_retry_with_token_refresh(&fetch_result) {
-        match refresh_chatgpt_auth_tokens_serialized(&working_auth_json, &state.auth_refresh_lock)
-            .await
+        match refresh_account_auth_tokens(app, state, &target.account_key, &working_auth_json).await
         {
             Ok(refreshed) => {
                 working_auth_json = refreshed;
                 auth_refreshed = true;
                 auth_refresh_blocked = false;
                 auth_refresh_error = None;
-                if let Err(err) = persist_account_refresh_state(
-                    app,
-                    state,
-                    &target.account_key,
-                    Some(&working_auth_json),
-                    false,
-                    None,
-                )
-                .await
-                {
-                    refresh_error = Some(err);
-                }
                 extracted = extract_auth(&working_auth_json);
                 fetch_result = match &extracted {
                     Ok(auth) => fetch_usage_snapshot(&auth.access_token, &auth.account_id).await,
@@ -714,6 +758,7 @@ async fn refresh_usage_for_target(
                     app,
                     state,
                     &target.account_key,
+                    &working_auth_json,
                     &err,
                     &mut auth_refresh_blocked,
                     &mut auth_refresh_error,
@@ -730,7 +775,6 @@ async fn refresh_usage_for_target(
     };
 
     let usage = fetch_result.as_ref().ok().cloned();
-    let now = now_unix_seconds();
     let codex_keepalive_last_at = maybe_run_codex_keepalive_ping(
         target.account_key.as_str(),
         &extracted,
@@ -756,6 +800,7 @@ async fn refresh_usage_for_target(
         updated_at: now,
         auth_plan_type,
         auth_email,
+        source_auth_json: target.auth_json.clone(),
         auth_json: working_auth_json,
         auth_is_current: target.auth_is_current,
         auth_refreshed,
@@ -867,6 +912,7 @@ async fn handle_refresh_failure(
     app: &AppHandle,
     state: &AppState,
     account_key: &str,
+    attempted_auth_json: &serde_json::Value,
     raw_error: &str,
     auth_refresh_blocked: &mut bool,
     auth_refresh_error: &mut Option<String>,
@@ -876,10 +922,11 @@ async fn handle_refresh_failure(
         let normalized_error = normalize_usage_error_message(raw_error);
         *auth_refresh_blocked = true;
         *auth_refresh_error = Some(normalized_error.clone());
-        if let Err(err) = persist_account_refresh_state(
+        if let Err(err) = persist_account_refresh_state_if_auth_matches(
             app,
             state,
             account_key,
+            attempted_auth_json,
             None,
             true,
             Some(normalized_error.as_str()),
@@ -894,10 +941,30 @@ async fn handle_refresh_failure(
     *refresh_error = Some(raw_error.to_string());
 }
 
-async fn persist_account_refresh_state(
+async fn refresh_account_auth_tokens(
     app: &AppHandle,
     state: &AppState,
     account_key: &str,
+    expected_auth_json: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let data_dir = app_paths::app_data_dir(app)?;
+    let store_path = account_store_path_from_data_dir(&data_dir);
+    refresh_account_group_auth_tokens_in_path(
+        &store_path,
+        account_key,
+        expected_auth_json,
+        &state.store_lock,
+        &state.auth_refresh_lock,
+        true,
+    )
+    .await
+}
+
+async fn persist_account_refresh_state_if_auth_matches(
+    app: &AppHandle,
+    state: &AppState,
+    account_key: &str,
+    expected_auth_json: &serde_json::Value,
     auth_json: Option<&serde_json::Value>,
     auth_refresh_blocked: bool,
     auth_refresh_error: Option<&str>,
@@ -905,9 +972,10 @@ async fn persist_account_refresh_state(
     let _guard = state.store_lock.lock().await;
     let data_dir = app_paths::app_data_dir(app)?;
     let store_path = account_store_path_from_data_dir(&data_dir);
-    update_account_group_refresh_state_in_path(
+    update_account_group_refresh_state_if_auth_matches_in_path(
         &store_path,
         account_key,
+        expected_auth_json,
         auth_json,
         auth_refresh_blocked,
         auth_refresh_error,
@@ -1629,12 +1697,17 @@ fn normalize_import_source(source: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::apply_refresh_outcome;
     use super::expand_import_json_content;
     use super::normalize_usage_error_message;
     use super::should_suspend_auth_keepalive;
+    use super::should_use_cached_usage_for_automatic_refresh;
     use super::upsert_prepared_import;
     use super::PreparedImport;
+    use super::RefreshOutcome;
+    use super::RefreshTarget;
     use super::AUTH_EXPIRED_NOTICE;
+    use super::USAGE_REFRESH_SUCCESS_TTL_SECS;
     use crate::models::AccountsStore;
     use crate::models::StoredAccount;
     use crate::models::UsageSnapshot;
@@ -1659,6 +1732,52 @@ mod tests {
         }
     }
 
+    fn refresh_target_with_usage(usage: Option<UsageSnapshot>) -> RefreshTarget {
+        RefreshTarget {
+            account_key: "principal:account".to_string(),
+            auth_json: json!({}),
+            auth_is_current: false,
+            auth_refresh_blocked: false,
+            auth_refresh_error: None,
+            updated_at: 1,
+            codex_keepalive_last_at: None,
+            usage,
+            usage_error: None,
+        }
+    }
+
+    fn stored_account_with_auth(auth_json: serde_json::Value) -> StoredAccount {
+        StoredAccount {
+            id: "stored".to_string(),
+            label: "stored".to_string(),
+            source_kind: Default::default(),
+            principal_id: Some("principal".to_string()),
+            email: Some("stored@example.com".to_string()),
+            account_id: "account".to_string(),
+            plan_type: Some("team".to_string()),
+            auth_json,
+            api_base_url: None,
+            api_key: None,
+            model_name: None,
+            balance_text: None,
+            profile_auth_path: None,
+            profile_config_path: None,
+            profile_auth_ready: false,
+            profile_config_ready: false,
+            profile_integrity_error: None,
+            profile_last_validated_at: None,
+            profile_last_validation_error: None,
+            added_at: 1,
+            updated_at: 20,
+            usage: None,
+            usage_error: None,
+            auth_refresh_blocked: false,
+            auth_refresh_error: None,
+            api_proxy_enabled: true,
+            codex_keepalive_last_at: None,
+        }
+    }
+
     fn prepared_import(
         principal_id: &str,
         account_id: &str,
@@ -1675,6 +1794,63 @@ mod tests {
             usage: Some(usage_snapshot(plan_type)),
             label: Some(label.to_string()),
         }
+    }
+
+    #[test]
+    fn automatic_usage_refresh_reuses_recent_successful_cache() {
+        let mut usage = usage_snapshot("team");
+        usage.fetched_at = 1_000;
+        let target = refresh_target_with_usage(Some(usage));
+
+        assert!(should_use_cached_usage_for_automatic_refresh(
+            &target,
+            false,
+            1_000 + USAGE_REFRESH_SUCCESS_TTL_SECS - 1,
+        ));
+        assert!(!should_use_cached_usage_for_automatic_refresh(
+            &target,
+            false,
+            1_000 + USAGE_REFRESH_SUCCESS_TTL_SECS,
+        ));
+        assert!(!should_use_cached_usage_for_automatic_refresh(
+            &target, true, 1_001,
+        ));
+
+        let mut failed_target = refresh_target_with_usage(target.usage.clone());
+        failed_target.usage_error = Some("刷新用量失败".to_string());
+        assert!(!should_use_cached_usage_for_automatic_refresh(
+            &failed_target,
+            false,
+            1_001,
+        ));
+    }
+
+    #[test]
+    fn stale_usage_outcome_does_not_overwrite_newer_auth_or_block_state() {
+        let mut account = stored_account_with_auth(json!({ "kind": "latest" }));
+        let outcome = RefreshOutcome {
+            usage: Some(usage_snapshot("team")),
+            usage_error: Some("授权过期，请重新登录授权。".to_string()),
+            updated_at: 10,
+            auth_plan_type: Some("team".to_string()),
+            auth_email: None,
+            source_auth_json: json!({ "kind": "stale" }),
+            auth_json: json!({ "kind": "stale" }),
+            auth_is_current: false,
+            auth_refreshed: false,
+            auth_refresh_blocked: true,
+            auth_refresh_error: Some("授权过期，请重新登录授权。".to_string()),
+            codex_keepalive_last_at: None,
+        };
+
+        apply_refresh_outcome(&mut account, &outcome);
+
+        assert_eq!(account.auth_json, json!({ "kind": "latest" }));
+        assert!(!account.auth_refresh_blocked);
+        assert_eq!(account.auth_refresh_error, None);
+        assert_eq!(account.updated_at, 20);
+        assert!(account.usage.is_some());
+        assert_eq!(account.usage_error, None);
     }
 
     #[test]

@@ -18,7 +18,7 @@ use crate::store::load_store;
 #[cfg(target_os = "macos")]
 use std::time::Duration;
 
-const REFRESH_INTERVAL_SECONDS: u64 = 30;
+const REFRESH_INTERVAL_SECONDS: u64 = 3 * 60;
 
 const TRAY_MENU_OPEN_ID: &str = "tray_open_window";
 const TRAY_MENU_QUIT_ID: &str = "tray_quit";

@@ -930,9 +930,15 @@ async fn switch_account_and_launch(
             ));
         }
 
-        let refreshed_auth = match auth::refresh_chatgpt_auth_tokens_serialized(
+        let data_dir = app_paths::app_data_dir(&app)?;
+        let store_path = store::account_store_path_from_data_dir(&data_dir);
+        let refreshed_auth = match store::refresh_account_group_auth_tokens_in_path(
+            &store_path,
+            &account.account_key(),
             &account.auth_json,
+            &state.store_lock,
             &state.auth_refresh_lock,
+            true,
         )
         .await
         {
@@ -945,26 +951,20 @@ async fn switch_account_and_launch(
 
                 if should_block_refresh {
                     let blocked_message = "授权过期，请重新登录授权。";
-                    match app_paths::app_data_dir(&app) {
-                        Ok(data_dir) => {
-                            let store_path = store::account_store_path_from_data_dir(&data_dir);
-                            if let Err(persist_error) =
-                                store::update_account_group_refresh_state_in_path(
-                                    &store_path,
-                                    &account.account_key(),
-                                    None,
-                                    true,
-                                    Some(blocked_message),
-                                    utils::now_unix_seconds(),
-                                    true,
-                                )
-                            {
-                                log::warn!("切换失败后写回账号停刷状态失败: {persist_error}");
-                            }
-                        }
-                        Err(path_error) => {
-                            log::warn!("切换失败后获取应用数据目录失败: {path_error}");
-                        }
+                    let _guard = state.store_lock.lock().await;
+                    if let Err(persist_error) =
+                        store::update_account_group_refresh_state_if_auth_matches_in_path(
+                            &store_path,
+                            &account.account_key(),
+                            &account.auth_json,
+                            None,
+                            true,
+                            Some(blocked_message),
+                            utils::now_unix_seconds(),
+                            true,
+                        )
+                    {
+                        log::warn!("切换失败后写回账号停刷状态失败: {persist_error}");
                     }
                 }
 
@@ -973,23 +973,6 @@ async fn switch_account_and_launch(
         };
 
         account.auth_json = refreshed_auth.clone();
-
-        let refreshed_at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|error| format!("读取系统时间失败: {error}"))?
-            .as_secs() as i64;
-        let _guard = state.store_lock.lock().await;
-        let mut latest_store = store::load_store(&app)?;
-        let stored_account = latest_store
-            .accounts
-            .iter_mut()
-            .find(|stored| stored.id == id)
-            .ok_or_else(|| "找不到要切换的账号".to_string())?;
-        stored_account.auth_json = refreshed_auth;
-        stored_account.updated_at = refreshed_at;
-        stored_account.auth_refresh_blocked = false;
-        stored_account.auth_refresh_error = None;
-        store::save_store(&app, &latest_store)?;
     }
 
     let should_sync_opencode = store.settings.sync_opencode_openai_auth;

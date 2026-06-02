@@ -61,9 +61,10 @@ use tokio_tungstenite::tungstenite::Message;
 use tauri::AppHandle;
 
 use crate::app_paths;
+use crate::auth::auth_access_token_valid_now;
 use crate::auth::extract_auth;
-use crate::auth::refresh_chatgpt_auth_tokens_serialized;
 use crate::models::normalize_api_proxy_sequential_five_hour_limit_percent;
+use crate::models::ApiProxyAccountCooldown;
 use crate::models::ApiProxyLoadBalanceMode;
 use crate::models::ApiProxyStatus;
 use crate::models::ApiProxyUsagePoint;
@@ -79,8 +80,9 @@ use crate::state::ApiProxyRuntimeSnapshot;
 use crate::state::AppState;
 use crate::store::account_store_path_from_data_dir;
 use crate::store::load_store_from_path;
+use crate::store::refresh_account_group_auth_tokens_in_path;
 use crate::store::save_store_to_path;
-use crate::store::update_account_group_refresh_state_in_path;
+use crate::store::update_account_group_refresh_state_if_auth_matches_in_path;
 use crate::usage::resolve_chatgpt_base_origin;
 use crate::utils::now_unix_seconds;
 use crate::utils::set_private_permissions;
@@ -142,6 +144,7 @@ const API_PROXY_USAGE_RANGE_7D_SECONDS: i64 = 7 * 24 * 60 * 60;
 const API_PROXY_USAGE_RANGE_14D_SECONDS: i64 = 14 * 24 * 60 * 60;
 const API_PROXY_USAGE_RANGE_30D_SECONDS: i64 = 30 * 24 * 60 * 60;
 const DEFAULT_API_PROXY_USAGE_RANGE_SECONDS: i64 = API_PROXY_USAGE_RANGE_24H_SECONDS;
+const API_PROXY_ACCOUNT_COOLDOWN_SECONDS: i64 = 3 * 60;
 
 #[derive(Clone)]
 pub(crate) struct ProxyStorageContext {
@@ -163,7 +166,6 @@ struct ProxyCandidate {
     plan_type: Option<String>,
     usage: Option<UsageSnapshot>,
     auth_refresh_blocked: bool,
-    auth_refresh_error: Option<String>,
     updated_at: i64,
 }
 
@@ -239,6 +241,7 @@ struct ProxyContext {
     upstream_base_url: String,
     client: reqwest::Client,
     shared: Arc<tokio::sync::Mutex<ApiProxyRuntimeSnapshot>>,
+    account_cooldowns: Arc<tokio::sync::Mutex<HashMap<String, ApiProxyAccountCooldown>>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -326,6 +329,7 @@ struct ApiProxyHandleState {
     api_key: Arc<RwLock<String>>,
     task_finished: bool,
     shared: Arc<tokio::sync::Mutex<ApiProxyRuntimeSnapshot>>,
+    account_cooldowns: Arc<tokio::sync::Mutex<HashMap<String, ApiProxyAccountCooldown>>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -337,9 +341,20 @@ enum RetryFailureCategory {
     Permission,
 }
 
+#[derive(Clone)]
 struct RetryFailureInfo {
     category: RetryFailureCategory,
     detail: String,
+}
+
+struct ProxyCandidateCooldownSelection {
+    candidates: Vec<ProxyCandidate>,
+    skipped: Vec<ProxyCandidateCooldownSkip>,
+}
+
+struct ProxyCandidateCooldownSkip {
+    label: String,
+    cooldown: ApiProxyAccountCooldown,
 }
 
 #[derive(Default)]
@@ -548,12 +563,14 @@ pub(crate) async fn start_api_proxy_with_runtime(
         .map_err(|error| format!("创建代理 HTTP 客户端失败: {error}"))?;
 
     let shared = Arc::new(tokio::sync::Mutex::new(ApiProxyRuntimeSnapshot::default()));
+    let account_cooldowns = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
     let context = Arc::new(ProxyContext {
         storage: storage.clone(),
         api_key: shared_api_key.clone(),
         upstream_base_url: resolve_codex_upstream_base_url(),
         client,
         shared: shared.clone(),
+        account_cooldowns: account_cooldowns.clone(),
     });
     let request_body_limit = resolve_proxy_request_body_limit_bytes();
 
@@ -590,6 +607,7 @@ pub(crate) async fn start_api_proxy_with_runtime(
         shutdown_tx: Some(shutdown_tx),
         task,
         shared,
+        account_cooldowns,
     };
     let status = status_from_handle_state(snapshot_handle_state(&handle)).await;
 
@@ -2550,8 +2568,30 @@ async fn send_codex_request_over_candidates(
         current_sequential_proxy_account_key(context).await,
         selection.persisted_sequential_account_key,
     );
+    let cooldown_enabled = selection.settings.api_proxy_account_cooldown_enabled;
+    let cooldown_selection = if cooldown_enabled {
+        proxy_candidates_after_cooldowns(context, selection.candidates, now_unix_seconds()).await
+    } else {
+        clear_proxy_account_cooldowns(context).await;
+        ProxyCandidateCooldownSelection {
+            candidates: selection.candidates,
+            skipped: Vec::new(),
+        }
+    };
+    if cooldown_selection.candidates.is_empty() {
+        let message = if cooldown_selection.skipped.is_empty() {
+            "No authorized account is available for proxying.".to_string()
+        } else {
+            build_proxy_cooldown_summary(&cooldown_selection.skipped)
+        };
+        update_proxy_error(context, Some(message.clone())).await;
+        return Err(json_error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &message,
+        ));
+    }
     let candidates = order_proxy_candidates_for_request(
-        selection.candidates,
+        cooldown_selection.candidates,
         selection.load_balance,
         current_sequential_account_key.as_deref(),
     );
@@ -2578,6 +2618,7 @@ async fn send_codex_request_over_candidates(
             let status = upstream.status();
             log_proxy_response_route(route, status);
             if status.is_success() {
+                clear_proxy_candidate_cooldown(context, &candidate).await;
                 record_api_proxy_call_success(context, &candidate, route, payload).await;
                 return Ok((candidate, upstream));
             }
@@ -2592,18 +2633,13 @@ async fn send_codex_request_over_candidates(
                 }
             };
 
-            if !did_refresh && should_retry_with_token_refresh(status, &upstream_body) {
-                if candidate.auth_refresh_blocked {
-                    attempt_errors.push(format!(
-                        "{}: {}",
-                        candidate.label,
-                        candidate
-                            .auth_refresh_error
-                            .clone()
-                            .unwrap_or_else(|| "授权过期，请重新登录授权。".to_string())
-                    ));
-                    break;
-                }
+            if should_attempt_proxy_candidate_token_refresh(
+                &candidate,
+                did_refresh,
+                status,
+                &upstream_body,
+            ) {
+                // Keep background usage refresh suppression separate from live request recovery.
                 match refresh_proxy_candidate_auth(&context.storage, &candidate).await {
                     Ok(refreshed_candidate) => {
                         candidate = refreshed_candidate;
@@ -2619,6 +2655,9 @@ async fn send_codex_request_over_candidates(
             }
 
             if let Some(failure) = classify_retriable_failure(status, &upstream_body) {
+                if cooldown_enabled {
+                    record_proxy_candidate_cooldown(context, &candidate, &failure).await;
+                }
                 retriable_failures.push(failure);
                 break;
             }
@@ -2885,7 +2924,10 @@ fn api_proxy_visible_models(settings: &AppSettings) -> Vec<&'static str> {
         .collect()
 }
 
-fn ensure_api_proxy_payload_models_enabled(payload: &Value, settings: &AppSettings) -> Result<(), String> {
+fn ensure_api_proxy_payload_models_enabled(
+    payload: &Value,
+    settings: &AppSettings,
+) -> Result<(), String> {
     let disabled = api_proxy_disabled_model_set(settings);
     let blocked = api_proxy_requested_models_from_payload(payload)
         .into_iter()
@@ -2960,6 +3002,10 @@ fn account_to_proxy_candidate(account: StoredAccount) -> Option<ProxyCandidate> 
     }
 
     let extracted = extract_auth(&account.auth_json).ok()?;
+    if account.auth_refresh_blocked && !auth_access_token_valid_now(&account.auth_json) {
+        return None;
+    }
+
     let account_key = account.account_key();
     let variant_key = account.variant_key();
     Some(ProxyCandidate {
@@ -2978,7 +3024,6 @@ fn account_to_proxy_candidate(account: StoredAccount) -> Option<ProxyCandidate> 
             .or(extracted.plan_type),
         usage: account.usage,
         auth_refresh_blocked: account.auth_refresh_blocked,
-        auth_refresh_error: account.auth_refresh_error,
         updated_at: account.updated_at,
     })
 }
@@ -2988,6 +3033,163 @@ fn should_replace_proxy_candidate(existing: &ProxyCandidate, candidate: &ProxyCa
         return !candidate.auth_refresh_blocked;
     }
     candidate.updated_at > existing.updated_at
+}
+
+async fn proxy_candidates_after_cooldowns(
+    context: &ProxyContext,
+    candidates: Vec<ProxyCandidate>,
+    now: i64,
+) -> ProxyCandidateCooldownSelection {
+    let mut cooldowns = context.account_cooldowns.lock().await;
+    filter_proxy_candidates_by_cooldown(candidates, &mut cooldowns, now)
+}
+
+fn filter_proxy_candidates_by_cooldown(
+    candidates: Vec<ProxyCandidate>,
+    cooldowns: &mut HashMap<String, ApiProxyAccountCooldown>,
+    now: i64,
+) -> ProxyCandidateCooldownSelection {
+    cooldowns.retain(|_, cooldown| cooldown.until > now);
+
+    let mut available = Vec::with_capacity(candidates.len());
+    let mut skipped = Vec::new();
+    for candidate in candidates {
+        if let Some(cooldown) = cooldowns.get(&candidate.account_key) {
+            skipped.push(ProxyCandidateCooldownSkip {
+                label: candidate.label,
+                cooldown: cooldown.clone(),
+            });
+        } else {
+            available.push(candidate);
+        }
+    }
+
+    ProxyCandidateCooldownSelection {
+        candidates: available,
+        skipped,
+    }
+}
+
+async fn record_proxy_candidate_cooldown(
+    context: &ProxyContext,
+    candidate: &ProxyCandidate,
+    failure: &RetryFailureInfo,
+) {
+    let until = now_unix_seconds() + proxy_account_cooldown_seconds(failure.category);
+    context.account_cooldowns.lock().await.insert(
+        candidate.account_key.clone(),
+        ApiProxyAccountCooldown {
+            account_key: candidate.account_key.clone(),
+            label: candidate.label.clone(),
+            category: retry_failure_category_key(failure.category).to_string(),
+            reason: failure.detail.clone(),
+            until,
+        },
+    );
+}
+
+async fn clear_proxy_candidate_cooldown(context: &ProxyContext, candidate: &ProxyCandidate) {
+    context
+        .account_cooldowns
+        .lock()
+        .await
+        .remove(&candidate.account_key);
+}
+
+async fn clear_proxy_account_cooldowns(context: &ProxyContext) {
+    context.account_cooldowns.lock().await.clear();
+}
+
+pub(crate) async fn clear_api_proxy_account_cooldowns_for_runtime(
+    runtime_slot: &tokio::sync::Mutex<Option<ApiProxyRuntimeHandle>>,
+) {
+    let account_cooldowns = {
+        let guard = runtime_slot.lock().await;
+        guard
+            .as_ref()
+            .map(|handle| handle.account_cooldowns.clone())
+    };
+
+    if let Some(account_cooldowns) = account_cooldowns {
+        account_cooldowns.lock().await.clear();
+    }
+}
+
+fn proxy_account_cooldown_seconds(_category: RetryFailureCategory) -> i64 {
+    API_PROXY_ACCOUNT_COOLDOWN_SECONDS
+}
+
+fn retry_failure_category_key(category: RetryFailureCategory) -> &'static str {
+    match category {
+        RetryFailureCategory::QuotaExceeded => "quotaExceeded",
+        RetryFailureCategory::RateLimited => "rateLimited",
+        RetryFailureCategory::ModelRestricted => "modelRestricted",
+        RetryFailureCategory::Authentication => "authentication",
+        RetryFailureCategory::Permission => "permission",
+    }
+}
+
+fn build_proxy_cooldown_summary(skipped: &[ProxyCandidateCooldownSkip]) -> String {
+    let mut message = format!("全部代理账号都在临时冷却中，稍后重试。");
+    if !skipped.is_empty() {
+        message.push_str(&build_cooldown_category_summary(skipped));
+    }
+    if let Some(sample) = skipped.first() {
+        message.push_str(" 最近账号：");
+        message.push_str(&sample.label);
+        if !sample.cooldown.reason.trim().is_empty() {
+            message.push_str("（");
+            message.push_str(&sample.cooldown.reason);
+            message.push('）');
+        }
+    }
+    message
+}
+
+fn build_cooldown_category_summary(skipped: &[ProxyCandidateCooldownSkip]) -> String {
+    let mut quota = 0usize;
+    let mut rate = 0usize;
+    let mut model = 0usize;
+    let mut auth = 0usize;
+    let mut permission = 0usize;
+
+    for item in skipped {
+        match item.cooldown.category.as_str() {
+            "quotaExceeded" => quota += 1,
+            "rateLimited" => rate += 1,
+            "modelRestricted" => model += 1,
+            "authentication" => auth += 1,
+            "permission" => permission += 1,
+            _ => {}
+        }
+    }
+
+    let mut parts = Vec::new();
+    if quota > 0 {
+        parts.push(format!("额度用完 {quota} 个"));
+    }
+    if rate > 0 {
+        parts.push(format!("频率限制 {rate} 个"));
+    }
+    if model > 0 {
+        parts.push(format!("模型受限 {model} 个"));
+    }
+    if auth > 0 {
+        parts.push(format!("鉴权失败 {auth} 个"));
+    }
+    if permission > 0 {
+        parts.push(format!("权限不足 {permission} 个"));
+    }
+
+    if parts.is_empty() {
+        format!(" 本次跳过 {} 个冷却账号。", skipped.len())
+    } else {
+        format!(
+            " 本次跳过 {} 个冷却账号：{}。",
+            skipped.len(),
+            parts.join("，")
+        )
+    }
 }
 
 fn log_proxy_request_route(route: &str) {
@@ -3016,30 +3218,43 @@ fn order_proxy_candidates_for_request(
         return candidates;
     };
 
+    let blocked_candidate_count = candidates
+        .iter()
+        .take_while(|candidate| candidate.auth_refresh_blocked)
+        .count();
+    if blocked_candidate_count == candidates.len() {
+        return candidates;
+    }
+
+    let mut sequential_candidates = candidates.split_off(blocked_candidate_count);
+    order_sequential_proxy_candidates(
+        &mut sequential_candidates,
+        current_key,
+        load_balance.sequential_five_hour_limit_percent,
+    );
+    candidates.extend(sequential_candidates);
+    candidates
+}
+
+fn order_sequential_proxy_candidates(
+    candidates: &mut Vec<ProxyCandidate>,
+    current_key: &str,
+    limit_percent: f64,
+) {
     if let Some(current_index) = candidates
         .iter()
         .position(|candidate| candidate.account_key == current_key)
     {
-        if can_reuse_sequential_candidate(
-            &candidates[current_index],
-            load_balance.sequential_five_hour_limit_percent,
-        ) {
+        if can_reuse_sequential_candidate(&candidates[current_index], limit_percent) {
             let current = candidates.remove(current_index);
             candidates.insert(0, current);
-            return candidates;
+            return;
         }
 
         candidates.sort_by(|left, right| {
-            compare_sequential_switch_candidates(
-                left,
-                right,
-                current_key,
-                load_balance.sequential_five_hour_limit_percent,
-            )
+            compare_sequential_switch_candidates(left, right, current_key, limit_percent)
         });
     }
-
-    candidates
 }
 
 fn sequential_account_key_for_request(
@@ -3066,15 +3281,15 @@ fn compare_sequential_switch_candidates(
 
 fn sequential_switch_rank(candidate: &ProxyCandidate, current_key: &str, limit_percent: f64) -> u8 {
     if candidate.auth_refresh_blocked {
-        return 3;
+        return 0;
     }
     if candidate.account_key == current_key {
-        return 2;
+        return 3;
     }
     if is_under_sequential_limit(candidate, limit_percent) {
-        0
-    } else {
         1
+    } else {
+        2
     }
 }
 
@@ -3085,7 +3300,7 @@ fn is_under_sequential_limit(candidate: &ProxyCandidate, limit_percent: f64) -> 
 }
 
 fn compare_proxy_candidates(left: &ProxyCandidate, right: &ProxyCandidate) -> Ordering {
-    match left.auth_refresh_blocked.cmp(&right.auth_refresh_blocked) {
+    match right.auth_refresh_blocked.cmp(&left.auth_refresh_blocked) {
         Ordering::Equal => {}
         ordering => return ordering,
     }
@@ -3163,9 +3378,14 @@ async fn refresh_proxy_candidate_auth(
     storage: &ProxyStorageContext,
     candidate: &ProxyCandidate,
 ) -> Result<ProxyCandidate, String> {
-    let refreshed_auth_json = match refresh_chatgpt_auth_tokens_serialized(
+    let store_path = account_store_path_from_data_dir(&storage.data_dir);
+    let refreshed_auth_json = match refresh_account_group_auth_tokens_in_path(
+        &store_path,
+        &candidate.account_key,
         &candidate.auth_json,
+        &storage.store_lock,
         &storage.auth_refresh_lock,
+        storage.sync_active_auth_on_refresh,
     )
     .await
     {
@@ -3176,6 +3396,7 @@ async fn refresh_proxy_candidate_auth(
                 persist_candidate_refresh_state(
                     storage,
                     &candidate.account_key,
+                    &candidate.auth_json,
                     None,
                     true,
                     Some(normalized.as_str()),
@@ -3186,14 +3407,6 @@ async fn refresh_proxy_candidate_auth(
             return Err(error);
         }
     };
-    persist_candidate_refresh_state(
-        storage,
-        &candidate.account_key,
-        Some(&refreshed_auth_json),
-        false,
-        None,
-    )
-    .await?;
 
     let extracted = extract_auth(&refreshed_auth_json)
         .map_err(|error| format!("刷新后解析账号登录态失败: {error}"))?;
@@ -3209,7 +3422,6 @@ async fn refresh_proxy_candidate_auth(
         plan_type: candidate.plan_type.clone().or(extracted.plan_type),
         usage: candidate.usage.clone(),
         auth_refresh_blocked: false,
-        auth_refresh_error: None,
         updated_at: now_unix_seconds(),
     })
 }
@@ -3217,15 +3429,17 @@ async fn refresh_proxy_candidate_auth(
 async fn persist_candidate_refresh_state(
     storage: &ProxyStorageContext,
     account_key: &str,
+    expected_auth_json: &Value,
     auth_json: Option<&Value>,
     auth_refresh_blocked: bool,
     auth_refresh_error: Option<&str>,
 ) -> Result<(), String> {
     let _guard = storage.store_lock.lock().await;
     let store_path = account_store_path_from_data_dir(&storage.data_dir);
-    update_account_group_refresh_state_in_path(
+    update_account_group_refresh_state_if_auth_matches_in_path(
         &store_path,
         account_key,
+        expected_auth_json,
         auth_json,
         auth_refresh_blocked,
         auth_refresh_error,
@@ -3304,6 +3518,19 @@ fn should_retry_with_token_refresh(status: StatusCode, body: &Bytes) -> bool {
         || signals.normalized.contains("invalid_token")
         || signals.normalized.contains("session expired")
         || signals.normalized.contains("login required")
+}
+
+fn should_attempt_proxy_token_refresh(did_refresh: bool, status: StatusCode, body: &Bytes) -> bool {
+    !did_refresh && should_retry_with_token_refresh(status, body)
+}
+
+fn should_attempt_proxy_candidate_token_refresh(
+    candidate: &ProxyCandidate,
+    did_refresh: bool,
+    status: StatusCode,
+    body: &Bytes,
+) -> bool {
+    !candidate.auth_refresh_blocked && should_attempt_proxy_token_refresh(did_refresh, status, body)
 }
 
 fn classify_retriable_failure(status: StatusCode, body: &Bytes) -> Option<RetryFailureInfo> {
@@ -5137,11 +5364,13 @@ fn snapshot_handle_state(handle: &ApiProxyRuntimeHandle) -> ApiProxyHandleState 
         api_key: handle.api_key.clone(),
         task_finished: handle.task.is_finished(),
         shared: handle.shared.clone(),
+        account_cooldowns: handle.account_cooldowns.clone(),
     }
 }
 
 async fn status_from_handle_state(handle: ApiProxyHandleState) -> ApiProxyStatus {
     let snapshot = handle.shared.lock().await.clone();
+    let account_cooldowns = collect_active_proxy_account_cooldowns(&handle.account_cooldowns).await;
     if handle.task_finished {
         ApiProxyStatus {
             running: false,
@@ -5153,6 +5382,7 @@ async fn status_from_handle_state(handle: ApiProxyHandleState) -> ApiProxyStatus
             active_account_id: snapshot.active_account_id,
             active_account_label: snapshot.active_account_label,
             last_error: snapshot.last_error,
+            account_cooldowns,
         }
     } else {
         ApiProxyStatus {
@@ -5165,6 +5395,7 @@ async fn status_from_handle_state(handle: ApiProxyHandleState) -> ApiProxyStatus
             active_account_id: snapshot.active_account_id,
             active_account_label: snapshot.active_account_label,
             last_error: snapshot.last_error,
+            account_cooldowns,
         }
     }
 }
@@ -5180,7 +5411,25 @@ fn stopped_status(api_key: Option<String>, last_error: Option<String>) -> ApiPro
         active_account_id: None,
         active_account_label: None,
         last_error,
+        account_cooldowns: Vec::new(),
     }
+}
+
+async fn collect_active_proxy_account_cooldowns(
+    account_cooldowns: &tokio::sync::Mutex<HashMap<String, ApiProxyAccountCooldown>>,
+) -> Vec<ApiProxyAccountCooldown> {
+    let now = now_unix_seconds();
+    let mut cooldowns = account_cooldowns.lock().await;
+    cooldowns.retain(|_, cooldown| cooldown.until > now);
+
+    let mut items = cooldowns.values().cloned().collect::<Vec<_>>();
+    items.sort_by(|left, right| {
+        left.until
+            .cmp(&right.until)
+            .then(left.label.cmp(&right.label))
+            .then(left.account_key.cmp(&right.account_key))
+    });
+    items
 }
 
 fn resolve_codex_upstream_base_url() -> String {
@@ -5271,7 +5520,9 @@ mod tests {
     use super::convert_openai_image_edit_request_to_codex;
     use super::convert_openai_image_generation_request_to_codex;
     use super::convert_responses_image_output_to_images_response;
+    use super::ensure_api_proxy_payload_models_enabled;
     use super::extract_completed_response_from_sse;
+    use super::filter_proxy_candidates_by_cooldown;
     use super::find_http_header_end;
     use super::host_matches_no_proxy;
     use super::is_responses_terminal_event;
@@ -5283,31 +5534,43 @@ mod tests {
     use super::parse_proxy_request_body_limit_mib;
     use super::prune_api_proxy_usage_events;
     use super::resolve_proxy_request_body_limit_bytes_from_mib_value;
+    use super::retry_failure_category_key;
     use super::rewrite_response_models_for_client;
     use super::rewrite_sse_event_data_models_for_client;
-    use super::sequential_account_key_for_request;
     use super::sanitize_api_proxy_disabled_models_for_settings;
+    use super::sequential_account_key_for_request;
+    use super::should_attempt_proxy_candidate_token_refresh;
+    use super::should_attempt_proxy_token_refresh;
     use super::should_use_responses_websocket;
     use super::translate_sse_event_to_chat_chunk;
     use super::translate_sse_event_to_image_chunk;
     use super::websocket_target_host_port;
-    use super::ensure_api_proxy_payload_models_enabled;
     use super::ApiProxyUsageEvent;
     use super::ChatStreamState;
     use super::ImageMultipartRequest;
     use super::ProxyCandidate;
     use super::ProxyLoadBalanceConfig;
+    use super::RetryFailureCategory;
     use super::SseEvent;
+    use super::API_PROXY_ACCOUNT_COOLDOWN_SECONDS;
     use super::API_PROXY_USAGE_RANGE_1H_SECONDS;
     use super::API_PROXY_USAGE_RETENTION_SECONDS;
     use super::DEFAULT_PROXY_REQUEST_BODY_LIMIT_BYTES;
-    use crate::models::AppSettings;
+    use crate::models::ApiProxyAccountCooldown;
     use crate::models::ApiProxyLoadBalanceMode;
+    use crate::models::AppSettings;
     use crate::models::StoredAccount;
     use crate::models::UsageSnapshot;
     use crate::models::UsageWindow;
+    use axum::body::Bytes;
+    use axum::http::StatusCode;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
     use serde_json::json;
     use serde_json::Value;
+    use std::collections::HashMap;
+    use std::time::SystemTime;
+    use std::time::UNIX_EPOCH;
 
     fn proxy_candidate(
         label: &str,
@@ -5359,8 +5622,72 @@ mod tests {
                 credits: None,
             }),
             auth_refresh_blocked,
-            auth_refresh_error: None,
             updated_at: 1,
+        }
+    }
+
+    fn test_now_unix_seconds() -> i64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("current time should be available")
+            .as_secs() as i64
+    }
+
+    fn jwt_with_exp(exp: i64) -> String {
+        let payload = URL_SAFE_NO_PAD.encode(json!({ "exp": exp }).to_string());
+        format!("header.{payload}.signature")
+    }
+
+    fn stored_proxy_account(api_proxy_enabled: bool, auth_refresh_blocked: bool) -> StoredAccount {
+        stored_proxy_account_with_access_token_exp(
+            api_proxy_enabled,
+            auth_refresh_blocked,
+            test_now_unix_seconds() + 3600,
+        )
+    }
+
+    fn stored_proxy_account_with_access_token_exp(
+        api_proxy_enabled: bool,
+        auth_refresh_blocked: bool,
+        access_token_exp: i64,
+    ) -> StoredAccount {
+        StoredAccount {
+            id: "stored".to_string(),
+            label: "stored".to_string(),
+            source_kind: Default::default(),
+            principal_id: Some("stored@example.com".to_string()),
+            email: Some("stored@example.com".to_string()),
+            account_id: "account-1".to_string(),
+            plan_type: Some("team".to_string()),
+            auth_json: json!({
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "access_token": jwt_with_exp(access_token_exp),
+                    "id_token": jwt_with_exp(test_now_unix_seconds() + 3600),
+                    "refresh_token": "refresh-token",
+                    "account_id": "account-1"
+                }
+            }),
+            api_base_url: None,
+            api_key: None,
+            model_name: None,
+            balance_text: None,
+            profile_auth_path: None,
+            profile_config_path: None,
+            profile_auth_ready: false,
+            profile_config_ready: false,
+            profile_integrity_error: None,
+            profile_last_validated_at: None,
+            profile_last_validation_error: None,
+            added_at: 1,
+            updated_at: 1,
+            usage: None,
+            usage_error: auth_refresh_blocked.then(|| "刷新用量失败".to_string()),
+            auth_refresh_blocked,
+            auth_refresh_error: auth_refresh_blocked
+                .then(|| "授权过期，请重新登录授权。".to_string()),
+            api_proxy_enabled,
+            codex_keepalive_last_at: None,
         }
     }
 
@@ -5390,39 +5717,102 @@ mod tests {
         }
     }
 
+    fn proxy_cooldown(category: RetryFailureCategory, until: i64) -> ApiProxyAccountCooldown {
+        ApiProxyAccountCooldown {
+            account_key: "a".to_string(),
+            label: "cooled".to_string(),
+            category: retry_failure_category_key(category).to_string(),
+            reason: "upstream rejected request".to_string(),
+            until,
+        }
+    }
+
     #[test]
     fn disabled_account_is_not_proxy_candidate() {
-        let account = StoredAccount {
-            id: "disabled".to_string(),
-            label: "disabled".to_string(),
-            source_kind: Default::default(),
-            principal_id: Some("disabled@example.com".to_string()),
-            email: Some("disabled@example.com".to_string()),
-            account_id: "account-1".to_string(),
-            plan_type: Some("team".to_string()),
-            auth_json: json!({}),
-            api_base_url: None,
-            api_key: None,
-            model_name: None,
-            balance_text: None,
-            profile_auth_path: None,
-            profile_config_path: None,
-            profile_auth_ready: false,
-            profile_config_ready: false,
-            profile_integrity_error: None,
-            profile_last_validated_at: None,
-            profile_last_validation_error: None,
-            added_at: 1,
-            updated_at: 1,
-            usage: None,
-            usage_error: None,
-            auth_refresh_blocked: false,
-            auth_refresh_error: None,
-            api_proxy_enabled: false,
-            codex_keepalive_last_at: None,
-        };
+        assert!(account_to_proxy_candidate(stored_proxy_account(false, false)).is_none());
+    }
+
+    #[test]
+    fn background_refresh_blocked_account_remains_proxy_candidate() {
+        let candidate = account_to_proxy_candidate(stored_proxy_account(true, true))
+            .expect("background refresh failures must not disable proxy forwarding");
+
+        assert!(candidate.auth_refresh_blocked);
+    }
+
+    #[test]
+    fn refresh_blocked_account_with_expired_access_token_is_not_proxy_candidate() {
+        let account =
+            stored_proxy_account_with_access_token_exp(true, true, test_now_unix_seconds() - 5);
 
         assert!(account_to_proxy_candidate(account).is_none());
+    }
+
+    #[test]
+    fn proxy_request_retries_token_refresh_once_after_unauthorized() {
+        let body = Bytes::new();
+
+        assert!(should_attempt_proxy_token_refresh(
+            false,
+            StatusCode::UNAUTHORIZED,
+            &body,
+        ));
+        assert!(!should_attempt_proxy_token_refresh(
+            true,
+            StatusCode::UNAUTHORIZED,
+            &body,
+        ));
+        assert!(should_attempt_proxy_candidate_token_refresh(
+            &proxy_candidate("healthy", "a", Some(10.0), Some(10.0), false),
+            false,
+            StatusCode::UNAUTHORIZED,
+            &body,
+        ));
+        assert!(!should_attempt_proxy_candidate_token_refresh(
+            &proxy_candidate("blocked", "b", Some(10.0), Some(10.0), true),
+            false,
+            StatusCode::UNAUTHORIZED,
+            &body,
+        ));
+    }
+
+    #[test]
+    fn account_cooldown_skips_candidate_until_expired() {
+        let now = 1_000;
+        let mut cooldowns = HashMap::from([(
+            "a".to_string(),
+            proxy_cooldown(
+                RetryFailureCategory::QuotaExceeded,
+                now + API_PROXY_ACCOUNT_COOLDOWN_SECONDS,
+            ),
+        )]);
+
+        let selection = filter_proxy_candidates_by_cooldown(
+            vec![
+                proxy_candidate("cooled", "a", Some(10.0), Some(10.0), false),
+                proxy_candidate("available", "b", Some(20.0), Some(20.0), false),
+            ],
+            &mut cooldowns,
+            now,
+        );
+
+        assert_eq!(candidate_labels(&selection.candidates), vec!["available"]);
+        assert_eq!(selection.skipped[0].label, "cooled");
+
+        let selection = filter_proxy_candidates_by_cooldown(
+            vec![
+                proxy_candidate("cooled", "a", Some(10.0), Some(10.0), false),
+                proxy_candidate("available", "b", Some(20.0), Some(20.0), false),
+            ],
+            &mut cooldowns,
+            now + API_PROXY_ACCOUNT_COOLDOWN_SECONDS,
+        );
+
+        assert_eq!(
+            candidate_labels(&selection.candidates),
+            vec!["cooled", "available"]
+        );
+        assert!(selection.skipped.is_empty());
     }
 
     #[test]
@@ -5599,7 +5989,7 @@ mod tests {
     }
 
     #[test]
-    fn average_load_balance_preserves_free_plan_then_usage_order() {
+    fn average_load_balance_prefers_refresh_blocked_then_free_plan_then_usage_order() {
         let candidates = vec![
             proxy_candidate_with_plan("free weekly 95", "e", Some(95.0), Some(95.0), false, "free"),
             proxy_candidate("weekly 20", "a", Some(20.0), Some(5.0), false),
@@ -5617,11 +6007,11 @@ mod tests {
         assert_eq!(
             candidate_labels(&ordered),
             vec![
+                "blocked low usage",
                 "free weekly 95",
                 "weekly 10 five 5",
                 "weekly 10 five 90",
                 "weekly 20",
-                "blocked low usage",
             ]
         );
     }
@@ -5640,6 +6030,26 @@ mod tests {
         );
 
         assert_eq!(candidate_labels(&ordered), vec!["current", "smart best"]);
+    }
+
+    #[test]
+    fn sequential_load_balance_prefers_refresh_blocked_candidate_before_current() {
+        let candidates = vec![
+            proxy_candidate("smart best", "a", Some(5.0), Some(10.0), false),
+            proxy_candidate("current", "b", Some(50.0), Some(70.0), false),
+            proxy_candidate("blocked valid", "c", Some(0.0), Some(0.0), true),
+        ];
+
+        let ordered = order_proxy_candidates_for_request(
+            candidates,
+            load_balance_config(ApiProxyLoadBalanceMode::Sequential, 80.0),
+            Some("b"),
+        );
+
+        assert_eq!(
+            candidate_labels(&ordered),
+            vec!["blocked valid", "current", "smart best"]
+        );
     }
 
     #[test]
@@ -5724,7 +6134,7 @@ mod tests {
 
         assert_eq!(
             candidate_labels(&ordered),
-            vec!["next under limit", "current at limit", "blocked"]
+            vec!["blocked", "next under limit", "current at limit"]
         );
     }
 

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Child;
 use std::sync::mpsc::Sender;
@@ -10,6 +11,7 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
 use crate::auth::PendingOauthLogin;
+use crate::models::ApiProxyAccountCooldown;
 use crate::models::CloudflaredTunnelMode;
 
 #[derive(Debug, Default, Clone)]
@@ -27,6 +29,7 @@ pub(crate) struct ApiProxyRuntimeHandle {
     pub(crate) shutdown_tx: Option<oneshot::Sender<()>>,
     pub(crate) task: JoinHandle<()>,
     pub(crate) shared: Arc<Mutex<ApiProxyRuntimeSnapshot>>,
+    pub(crate) account_cooldowns: Arc<Mutex<HashMap<String, ApiProxyAccountCooldown>>>,
 }
 
 pub(crate) struct CloudflaredRuntimeHandle {
