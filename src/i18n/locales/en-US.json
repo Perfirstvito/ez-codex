@@ -108,6 +108,8 @@
     "apiProxyEnabled": "Proxy enabled",
     "apiProxyDisabled": "Proxy disabled",
     "apiProxyToggle": "Toggle API proxy participation",
+    "refreshAuth": "Refresh auth token",
+    "refreshingAuth": "Refreshing auth",
     "reauthorize": "Reauthorize account",
     "editAlias": "Edit alias",
     "aliasInputLabel": "Account alias",
@@ -135,7 +137,18 @@
   },
   "accountsGrid": {
     "emptyTitle": "No accounts yet",
-    "emptyDescription": "Click “Add account”. It appears automatically after authorization."
+    "emptyDescription": "Click “Add account”. It appears automatically after authorization.",
+    "emptyFilteredTitle": "No accounts in this pool",
+    "emptyFilteredDescription": "Switch back to all pools or add an account for this pool.",
+    "poolFilterAriaLabel": "Account pool filter",
+    "poolAll": "All",
+    "poolFree": "Free pool",
+    "poolPlus": "Plus pool",
+    "poolPro": "Pro pool",
+    "poolOtherPlan": "Other plan pool",
+    "poolRelay": "Upstream relay pool",
+    "poolAccessOnly": "Access temporarily usable",
+    "poolUnavailable": "Unavailable accounts"
   },
   "bottomDock": {
     "ariaLabel": "Bottom navigation",
@@ -479,6 +492,8 @@
     "accountApiProxyEnabled": "{{label}} now participates in API proxying.",
     "accountApiProxyDisabled": "{{label}} no longer participates in API proxying.",
     "accountApiProxyToggleFailed": "Failed to update API proxy toggle: {{error}}",
+    "accountAuthRefreshed": "{{label}} auth refreshed.",
+    "accountAuthRefreshFailed": "Failed to refresh account auth: {{error}}",
     "accountsExported": "Account list exported",
     "accountsExportFailed": "Failed to export account list: {{error}}",
     "deleteConfirm": "Click delete again to confirm removing {{label}}.",

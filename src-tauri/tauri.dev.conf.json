@@ -1,0 +1,9 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "Codex Tools Dev",
+  "identifier": "com.carry.codex-tools.dev",
+  "build": {
+    "devUrl": "http://localhost:5174",
+    "beforeDevCommand": "npm run dev -- --host 0.0.0.0 --port 5174"
+  }
+}

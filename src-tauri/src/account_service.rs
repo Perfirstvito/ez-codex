@@ -533,6 +533,65 @@ pub(crate) async fn refresh_all_usage_internal(
     Ok(summaries)
 }
 
+pub(crate) async fn refresh_account_auth_internal(
+    app: &AppHandle,
+    state: &AppState,
+    id: &str,
+) -> Result<Vec<AccountSummary>, String> {
+    let current_auth_override: Option<(String, serde_json::Value)> =
+        read_current_codex_auth_optional()
+            .ok()
+            .flatten()
+            .and_then(|auth_json| {
+                extract_auth(&auth_json).ok().map(|auth| {
+                    (
+                        account_group_key(&auth.principal_id, &auth.account_id),
+                        auth_json,
+                    )
+                })
+            });
+
+    let target = {
+        let _guard = state.store_lock.lock().await;
+        let store = load_store(app)?;
+        let account = store
+            .accounts
+            .iter()
+            .find(|account| account.id == id)
+            .ok_or_else(|| format!("找不到要刷新授权的账号: {id}"))?;
+
+        if matches!(account.source_kind, AccountSourceKind::Relay) {
+            return Err("API 中继账号不支持刷新 ChatGPT 授权。".to_string());
+        }
+
+        let account_key = account.account_key();
+        build_refresh_targets(store.accounts, current_auth_override.as_ref())
+            .into_iter()
+            .find(|target| target.account_key == account_key)
+            .ok_or_else(|| format!("找不到要刷新授权的账号: {id}"))?
+    };
+
+    match refresh_account_auth_tokens(app, state, &target.account_key, &target.auth_json).await {
+        Ok(_) => {}
+        Err(err) if should_suspend_auth_keepalive(&err) => {
+            let normalized_error = normalize_usage_error_message(&err);
+            persist_account_refresh_state_if_auth_matches(
+                app,
+                state,
+                &target.account_key,
+                &target.auth_json,
+                None,
+                true,
+                Some(normalized_error.as_str()),
+            )
+            .await?;
+        }
+        Err(err) => return Err(err),
+    }
+
+    list_accounts_internal(app, state).await
+}
+
 fn apply_refresh_outcome(account: &mut StoredAccount, outcome: &RefreshOutcome) {
     account.updated_at = account.updated_at.max(outcome.updated_at);
     let can_apply_auth_state =
@@ -1639,8 +1698,7 @@ fn import_stored_account_candidates(
                 .or(account_id),
         ),
         auth_json: normalize_imported_auth_json(auth_json),
-        label: normalize_custom_label(label_override.map(ToString::to_string))
-            .or_else(|| normalize_custom_label(stored_label)),
+        label: normalize_custom_label(label_override.map(ToString::to_string)),
         usage,
         plan_type,
         email,
@@ -1682,8 +1740,17 @@ fn normalize_custom_label(label: Option<String>) -> Option<String> {
 
 fn fallback_account_label(email: Option<&str>, account_id: &str) -> String {
     email
+        .and_then(email_account_name)
         .map(ToString::to_string)
         .unwrap_or_else(|| format!("Codex {}", short_account(account_id)))
+}
+
+fn email_account_name(email: &str) -> Option<&str> {
+    email
+        .trim()
+        .split_once('@')
+        .map(|(name, _)| name.trim())
+        .filter(|name| !name.is_empty())
 }
 
 fn normalize_import_source(source: &str) -> String {
@@ -1891,7 +1958,7 @@ mod tests {
         let candidates = expand_import_json_content(&raw, "accounts.json", None).unwrap();
 
         assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].label.as_deref(), Some("Alpha"));
+        assert_eq!(candidates[0].label, None);
         assert_eq!(candidates[0].email.as_deref(), Some("alpha@example.com"));
         assert_eq!(candidates[0].plan_type.as_deref(), Some("team"));
         assert_eq!(
@@ -1936,7 +2003,7 @@ mod tests {
         let candidates = expand_import_json_content(&raw, "account.json", None).unwrap();
 
         assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].label.as_deref(), Some("Solo"));
+        assert_eq!(candidates[0].label, None);
         assert_eq!(candidates[0].source, "account.json / Solo");
     }
 
@@ -2047,6 +2114,26 @@ mod tests {
                 .and_then(|usage| usage.plan_type.as_deref()),
             Some("plus")
         );
+    }
+
+    #[test]
+    fn upsert_prepared_import_defaults_label_to_email_account_name() {
+        let mut store = AccountsStore::default();
+        let prepared = PreparedImport {
+            principal_id: "shared@example.com".to_string(),
+            auth_json: json!({ "kind": "default-label" }),
+            account_id: "account-1".to_string(),
+            email: Some("  shared.name@example.com  ".to_string()),
+            plan_type: Some("plus".to_string()),
+            usage: None,
+            label: None,
+        };
+
+        let (summary, updated_existing) = upsert_prepared_import(&mut store, prepared, None, None);
+
+        assert!(!updated_existing);
+        assert_eq!(summary.label, "shared.name");
+        assert_eq!(store.accounts[0].label, "shared.name");
     }
 
     #[test]

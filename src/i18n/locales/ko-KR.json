@@ -108,6 +108,8 @@
     "apiProxyEnabled": "프록시 사용",
     "apiProxyDisabled": "프록시 제외",
     "apiProxyToggle": "API 프록시 참여 전환",
+    "refreshAuth": "인증 토큰 새로고침",
+    "refreshingAuth": "인증 새로고침 중",
     "reauthorize": "계정 재인증",
     "editAlias": "별칭 편집",
     "aliasInputLabel": "계정 별칭",
@@ -135,7 +137,18 @@
   },
   "accountsGrid": {
     "emptyTitle": "아직 계정이 없습니다",
-    "emptyDescription": "“계정 추가”를 클릭하면 인증 후 자동으로 표시됩니다."
+    "emptyDescription": "“계정 추가”를 클릭하면 인증 후 자동으로 표시됩니다.",
+    "emptyFilteredTitle": "이 풀의 계정이 없습니다",
+    "emptyFilteredDescription": "전체 풀로 전환하거나 이 풀의 계정을 추가하세요.",
+    "poolFilterAriaLabel": "계정 풀 필터",
+    "poolAll": "전체",
+    "poolFree": "Free 풀",
+    "poolPlus": "Plus 풀",
+    "poolPro": "Pro 풀",
+    "poolOtherPlan": "기타 요금제 풀",
+    "poolRelay": "상위 채널 풀",
+    "poolAccessOnly": "Access 임시 사용 가능",
+    "poolUnavailable": "사용 불가 계정"
   },
   "bottomDock": {
     "ariaLabel": "하단 탐색",
@@ -479,6 +492,8 @@
     "accountApiProxyEnabled": "{{label}} 계정이 API 프록시에 참여합니다.",
     "accountApiProxyDisabled": "{{label}} 계정이 API 프록시에서 제외되었습니다.",
     "accountApiProxyToggleFailed": "API 프록시 전환 업데이트 실패: {{error}}",
+    "accountAuthRefreshed": "{{label}} 인증이 새로고침되었습니다.",
+    "accountAuthRefreshFailed": "계정 인증 새로고침 실패: {{error}}",
     "accountsExported": "계정 목록을 내보냈습니다",
     "accountsExportFailed": "계정 목록 내보내기 실패: {{error}}",
     "deleteConfirm": "{{label}} 삭제를 확인하려면 삭제를 다시 클릭하세요.",

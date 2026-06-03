@@ -12,10 +12,12 @@ import {
 type AccountCardProps = {
   accounts: AccountSummary[];
   exportingAccounts: boolean;
+  refreshingAuthAccountId: string | null;
   switchingId: string | null;
   renamingAccountId: string | null;
   pendingDeleteId: string | null;
   onExport: (account: AccountSummary) => void;
+  onRefreshAuth: (account: AccountSummary) => void;
   onReauthorize: (account: AccountSummary) => void;
   onRename: (account: AccountSummary, label: string) => Promise<boolean>;
   onToggleApiProxy: (account: AccountSummary, enabled: boolean) => Promise<boolean>;
@@ -69,6 +71,22 @@ function ReauthorizeIcon() {
       <path d="M21 12a9 9 0 1 1-2.64-6.36" />
       <path d="M21 3v6h-6" />
       <path d="M12 8v4l3 2" />
+    </svg>
+  );
+}
+
+function RefreshAuthIcon({ spinning }: { spinning: boolean }) {
+  return (
+    <svg
+      className={`iconGlyph ${spinning ? "isSpinning" : ""}`}
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M21 12a9 9 0 0 1-15.3 6.36" />
+      <path d="M3 12a9 9 0 0 1 15.3-6.36" />
+      <path d="M21 3v6h-6" />
+      <path d="M3 21v-6h6" />
     </svg>
   );
 }
@@ -158,10 +176,12 @@ function pickDefaultAccount(accounts: AccountSummary[]): AccountSummary | null {
 export function AccountCard({
   accounts,
   exportingAccounts,
+  refreshingAuthAccountId,
   switchingId,
   renamingAccountId,
   pendingDeleteId,
   onExport,
+  onRefreshAuth,
   onReauthorize,
   onRename,
   onToggleApiProxy,
@@ -169,9 +189,7 @@ export function AccountCard({
   onDelete,
 }: AccountCardProps) {
   const { copy, locale } = useI18n();
-  const [preferredSelectedId, setPreferredSelectedId] = useState<string | null>(
-    () => pickDefaultAccount(accounts)?.id ?? null,
-  );
+  const [preferredSelectedId, setPreferredSelectedId] = useState<string | null>(null);
   const [isEditingAlias, setIsEditingAlias] = useState(false);
   const [draftLabel, setDraftLabel] = useState("");
 
@@ -196,12 +214,16 @@ export function AccountCard({
   const normalizedPlan = isRelay ? "api" : selectedAccount.planType || usage?.planType;
   const tone = planTone(normalizedPlan);
   const isSwitching = switchingId === selectedAccount.id;
+  const isRefreshingAuth = refreshingAuthAccountId === selectedAccount.id;
   const isRenaming = renamingAccountId === selectedAccount.accountKey;
   const isDeletePending = pendingDeleteId === selectedAccount.id;
   const isFreePlan = tone === "free";
   const usageCenterLabel = copy.accountCard.remaining;
   const displayUsagePercent = (window: UsageWindow | null) => remainingPercent(window);
   const launchLabel = isSwitching ? copy.accountCard.launching : copy.accountCard.launch;
+  const refreshAuthLabel = isRefreshingAuth
+    ? copy.accountCard.refreshingAuth
+    : copy.accountCard.refreshAuth;
   const fiveHourReset = formatResetValue(fiveHour?.resetAt, locale);
   const oneWeekReset = formatResetValue(oneWeek?.resetAt, locale);
   const normalizedDraftLabel = draftLabel.trim();
@@ -373,6 +395,18 @@ export function AccountCard({
               <path d="M5 21h14" />
             </svg>
           </button>
+          {!isRelay ? (
+            <button
+              type="button"
+              className="cardRefreshAuthIcon"
+              onClick={() => onRefreshAuth(selectedAccount)}
+              disabled={refreshingAuthAccountId !== null}
+              aria-label={refreshAuthLabel}
+              title={refreshAuthLabel}
+            >
+              <RefreshAuthIcon spinning={isRefreshingAuth} />
+            </button>
+          ) : null}
           {!isRelay ? (
             <button
               type="button"

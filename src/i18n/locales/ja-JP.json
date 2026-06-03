@@ -108,6 +108,8 @@
     "apiProxyEnabled": "プロキシ有効",
     "apiProxyDisabled": "プロキシ無効",
     "apiProxyToggle": "API プロキシ参加を切り替え",
+    "refreshAuth": "認証トークンを更新",
+    "refreshingAuth": "認証を更新中",
     "reauthorize": "アカウントを再認可",
     "editAlias": "別名を編集",
     "aliasInputLabel": "アカウント別名",
@@ -135,7 +137,18 @@
   },
   "accountsGrid": {
     "emptyTitle": "まだアカウントがありません",
-    "emptyDescription": "「アカウント追加」をクリックすると、認証後に自動表示されます。"
+    "emptyDescription": "「アカウント追加」をクリックすると、認証後に自動表示されます。",
+    "emptyFilteredTitle": "このプールのアカウントはありません",
+    "emptyFilteredDescription": "すべてのプールに戻すか、このプールのアカウントを追加してください。",
+    "poolFilterAriaLabel": "アカウントプールフィルター",
+    "poolAll": "すべて",
+    "poolFree": "Free プール",
+    "poolPlus": "Plus プール",
+    "poolPro": "Pro プール",
+    "poolOtherPlan": "その他プランのプール",
+    "poolRelay": "上流チャネルプール",
+    "poolAccessOnly": "Access 一時利用可",
+    "poolUnavailable": "利用不可アカウント"
   },
   "bottomDock": {
     "ariaLabel": "下部ナビゲーション",
@@ -479,6 +492,8 @@
     "accountApiProxyEnabled": "{{label}} は API プロキシに参加します。",
     "accountApiProxyDisabled": "{{label}} は API プロキシに参加しません。",
     "accountApiProxyToggleFailed": "API プロキシ切り替えの更新に失敗しました: {{error}}",
+    "accountAuthRefreshed": "{{label}} の認証を更新しました。",
+    "accountAuthRefreshFailed": "アカウント認証の更新に失敗しました: {{error}}",
     "accountsExported": "アカウント一覧をエクスポートしました",
     "accountsExportFailed": "アカウント一覧のエクスポートに失敗しました: {{error}}",
     "deleteConfirm": "{{label}} を削除するには、もう一度削除をクリックしてください。",

@@ -1,3 +1,99 @@
+.accountsGridShell {
+  min-height: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+}
+
+.accountTypeFilter {
+  justify-self: center;
+  max-width: 100%;
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--line) 90%, var(--surface-tint) 10%);
+  background: color-mix(in srgb, var(--meta-bg) 72%, transparent);
+  box-shadow:
+    0 1px 2px rgba(18, 36, 62, 0.04),
+    inset 0 1px var(--surface-highlight-soft);
+  overflow-x: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.accountTypeFilter::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+.accountTypeButton {
+  min-width: 108px;
+  min-height: 30px;
+  padding: 0 9px 0 11px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  box-shadow: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--subtle);
+  font: 650 0.74rem/1 var(--font-ui);
+  white-space: nowrap;
+}
+
+.accountTypeButton::before {
+  display: none;
+}
+
+.accountTypeButton span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.accountTypeButton strong {
+  min-width: 24px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--body-bg) 34%, var(--surface-tint) 66%);
+  color: color-mix(in srgb, var(--ink) 72%, var(--subtle) 28%);
+  font: 700 0.64rem/1 var(--font-mono);
+  letter-spacing: 0;
+}
+
+.accountTypeButton:hover,
+.accountTypeButton:focus-visible {
+  transform: none;
+  border-color: transparent;
+  background: color-mix(in srgb, var(--body-bg) 28%, var(--surface-tint) 72%);
+  box-shadow: none;
+}
+
+.accountTypeButton.isActive {
+  border-color: color-mix(in srgb, var(--brand-cool) 24%, var(--line) 76%);
+  background: color-mix(in srgb, var(--card) 86%, var(--surface-tint) 14%);
+  color: var(--ink);
+  box-shadow:
+    0 1px 2px rgba(18, 36, 62, 0.05),
+    inset 0 1px var(--surface-highlight-strong);
+}
+
+.accountTypeButton.isActive strong {
+  background: color-mix(in srgb, var(--brand-cool) 18%, var(--surface-tint) 82%);
+  color: color-mix(in srgb, var(--ink) 88%, var(--brand-cool) 12%);
+}
+
 .cards {
   margin-top: 0;
   display: grid;
@@ -16,6 +112,129 @@
   width: 0;
   height: 0;
   display: none;
+}
+
+.accountPoolSections {
+  min-height: 0;
+  overflow: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  display: grid;
+  align-content: start;
+  gap: 26px;
+  padding: 2px 0 10px;
+}
+
+.accountPoolSections::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+.accountPoolSection {
+  --pool-accent: var(--brand-cool);
+  --pool-accent-soft: color-mix(in srgb, var(--pool-accent) 12%, transparent);
+  --pool-accent-line: color-mix(in srgb, var(--pool-accent) 34%, var(--line) 66%);
+  width: min(100%, 1104px);
+  margin: 0 auto;
+  min-width: 0;
+  display: grid;
+  gap: 14px;
+  padding: 12px 0 4px;
+  border-top: 1px solid var(--pool-accent-line);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--pool-accent) 7%, transparent),
+      transparent 132px
+    ),
+    linear-gradient(90deg, var(--pool-accent-soft), transparent 42%);
+}
+
+.accountPoolSection[data-pool="free"] {
+  --pool-accent: #6f7f9b;
+}
+
+.accountPoolSection[data-pool="plus"] {
+  --pool-accent: #8a6ee8;
+}
+
+.accountPoolSection[data-pool="pro"] {
+  --pool-accent: #d7792f;
+}
+
+.accountPoolSection[data-pool="otherPlan"] {
+  --pool-accent: #10a498;
+}
+
+.accountPoolSection[data-pool="relay"] {
+  --pool-accent: #3b82d8;
+}
+
+.accountPoolSection[data-pool="accessOnly"] {
+  --pool-accent: #b58a16;
+}
+
+.accountPoolSection[data-pool="unavailable"] {
+  --pool-accent: #c84c5a;
+}
+
+.accountPoolSectionHeader {
+  min-height: 36px;
+  padding: 0 2px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--ink);
+  position: relative;
+}
+
+.accountPoolSectionHeader::before {
+  content: "";
+  width: 4px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--pool-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--pool-accent) 12%, transparent);
+  flex: 0 0 auto;
+}
+
+.accountPoolSectionHeader h3 {
+  margin: 0;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 750 0.95rem/1.1 var(--font-ui);
+  letter-spacing: 0;
+}
+
+.accountPoolSectionHeader strong {
+  min-width: 34px;
+  height: 23px;
+  padding: 0 8px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--pool-accent) 28%, var(--line) 72%);
+  background: color-mix(in srgb, var(--pool-accent) 12%, var(--card) 88%);
+  color: color-mix(in srgb, var(--ink) 76%, var(--pool-accent) 24%);
+  box-shadow: inset 0 1px var(--surface-highlight-soft);
+  font: 750 0.68rem/1 var(--font-mono);
+  letter-spacing: 0;
+}
+
+.accountPoolSectionGrid {
+  display: grid;
+  grid-template-columns: repeat(3, 356px);
+  grid-auto-rows: 312px;
+  gap: 18px;
+  justify-content: start;
+  align-content: start;
+  min-width: 0;
 }
 
 .emptyState {
@@ -552,6 +771,7 @@
 .cardEditIcon,
 .cardDeleteIcon,
 .cardReauthorizeIcon,
+.cardRefreshAuthIcon,
 .cardExportIcon {
   position: static;
   width: 28px;
@@ -566,6 +786,7 @@
 
 .cardExportIcon .iconGlyph,
 .cardReauthorizeIcon .iconGlyph,
+.cardRefreshAuthIcon .iconGlyph,
 .cardEditIcon .iconGlyph,
 .cardDeleteIcon .iconGlyph {
   width: 16px;
@@ -576,6 +797,8 @@
 .cardEditIcon:focus-visible,
 .cardReauthorizeIcon:hover:not(:disabled),
 .cardReauthorizeIcon:focus-visible,
+.cardRefreshAuthIcon:hover:not(:disabled),
+.cardRefreshAuthIcon:focus-visible,
 .cardExportIcon:hover:not(:disabled),
 .cardExportIcon:focus-visible,
 .cardDeleteIcon:hover:not(:disabled),

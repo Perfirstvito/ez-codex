@@ -172,6 +172,7 @@ export function useCodexController() {
   const [importingAccounts, setImportingAccounts] = useState(false);
   const [oauthWaitingForCallback, setOauthWaitingForCallback] = useState(false);
   const [exportingAccounts, setExportingAccounts] = useState(false);
+  const [refreshingAuthAccountId, setRefreshingAuthAccountId] = useState<string | null>(null);
   const [apiProxyStatus, setApiProxyStatus] = useState<ApiProxyStatus>(DEFAULT_API_PROXY_STATUS);
   const [apiProxySupportedModels, setApiProxySupportedModels] = useState<string[]>([]);
   const [apiProxyUsageStats, setApiProxyUsageStats] = useState<ApiProxyUsageStats | null>(null);
@@ -534,6 +535,49 @@ export function useCodexController() {
       }
     }
   }, [copy.notices, localizeError]);
+
+  const onRefreshAccountAuth = useCallback(
+    async (account: AccountSummary) => {
+      if (refreshingAuthAccountId !== null || account.sourceKind === "relay") {
+        return;
+      }
+
+      setRefreshingAuthAccountId(account.id);
+      try {
+        const data = await invoke<AccountSummary[]>("refresh_account_auth", {
+          id: account.id,
+        });
+        const promptedRelogin = applyAccounts(data);
+        const accountAuthBlocked = data.some(
+          (item) =>
+            item.accountKey === account.accountKey &&
+            item.authRefreshBlocked &&
+            item.authRefreshError,
+        );
+        if (accountAuthBlocked && !promptedRelogin) {
+          setNotice({
+            type: "info",
+            message: copy.notices.reloginRequired(account.label),
+          });
+        } else if (!promptedRelogin) {
+          setNotice({
+            type: "ok",
+            message: copy.notices.accountAuthRefreshed(account.label),
+          });
+        }
+      } catch (error) {
+        setNotice({
+          type: "error",
+          message: copy.notices.accountAuthRefreshFailed(localizeError(String(error))),
+        });
+      } finally {
+        setRefreshingAuthAccountId((current) =>
+          current === account.id ? null : current,
+        );
+      }
+    },
+    [applyAccounts, copy.notices, localizeError, refreshingAuthAccountId],
+  );
 
   const applyImportResult = useCallback(
     async (result: ImportAccountsResult, prefix: string) => {
@@ -1910,6 +1954,7 @@ export function useCodexController() {
     reauthorizeAccount,
     oauthWaitingForCallback,
     exportingAccounts,
+    refreshingAuthAccountId,
     apiProxyStatus,
     apiProxyUsageStats,
     apiProxyUsageRange,
@@ -1966,6 +2011,7 @@ export function useCodexController() {
     onImportCurrentAuth,
     onCreateApiAccount,
     onImportAuthFiles,
+    onRefreshAccountAuth,
     onExportAccounts,
     loadApiProxyStatus,
     onSelectApiProxyUsageRange,

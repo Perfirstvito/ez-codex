@@ -160,6 +160,35 @@
     width: 100%;
   }
 
+  .accountTypeFilter {
+    justify-self: stretch;
+    justify-content: flex-start;
+  }
+
+  .accountTypeButton {
+    flex: 1 0 auto;
+    min-width: 104px;
+  }
+
+  .accountPoolSections {
+    gap: 18px;
+    padding-bottom: 6px;
+  }
+
+  .accountPoolSection {
+    width: 100%;
+    padding: 10px 0 2px;
+  }
+
+  .accountPoolSectionHeader {
+    padding: 0 2px;
+  }
+
+  .accountPoolSectionGrid {
+    grid-template-columns: minmax(0, 356px);
+    justify-content: center;
+  }
+
   .proxySectionHeader,
   .cloudflaredToolbar,
   .cloudflaredInstallCard,
@@ -254,5 +283,15 @@
     bottom: calc(env(safe-area-inset-bottom, 0px) + 14px);
     right: 14px;
     width: calc(100vw - 28px);
+  }
+}
+
+@media (min-width: 901px) and (max-width: 1220px) {
+  .accountPoolSection {
+    width: min(100%, 752px);
+  }
+
+  .accountPoolSectionGrid {
+    grid-template-columns: repeat(2, 356px);
   }
 }

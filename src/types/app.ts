@@ -46,11 +46,20 @@ export type CodexTokenUsageSnapshot = {
 };
 
 export type AccountSourceKind = "chatgpt" | "relay";
+export type AccountPoolKind =
+  | "free"
+  | "plus"
+  | "pro"
+  | "otherPlan"
+  | "relay"
+  | "accessOnly"
+  | "unavailable";
 
 export type AccountSummary = {
   id: string;
   label: string;
   sourceKind: AccountSourceKind;
+  poolKind: AccountPoolKind;
   email: string | null;
   accountKey: string;
   accountId: string;

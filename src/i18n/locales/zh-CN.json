@@ -108,6 +108,8 @@
     "apiProxyEnabled": "参与反代",
     "apiProxyDisabled": "不参与反代",
     "apiProxyToggle": "切换账号是否参与 API 反代",
+    "refreshAuth": "刷新授权令牌",
+    "refreshingAuth": "授权刷新中",
     "reauthorize": "重新授权账号",
     "editAlias": "设置别名",
     "aliasInputLabel": "账号别名",
@@ -135,7 +137,18 @@
   },
   "accountsGrid": {
     "emptyTitle": "还没有账号",
-    "emptyDescription": "点击“添加账号”，完成授权后会自动出现在列表中。"
+    "emptyDescription": "点击“添加账号”，完成授权后会自动出现在列表中。",
+    "emptyFilteredTitle": "该号池暂无账号",
+    "emptyFilteredDescription": "切换到全部号池，或添加对应号池的新账号。",
+    "poolFilterAriaLabel": "账号号池分类",
+    "poolAll": "全部",
+    "poolFree": "Free 号池",
+    "poolPlus": "Plus 号池",
+    "poolPro": "Pro 号池",
+    "poolOtherPlan": "其他套餐号池",
+    "poolRelay": "上游渠道号池",
+    "poolAccessOnly": "Access 临时可用",
+    "poolUnavailable": "不可用账号"
   },
   "bottomDock": {
     "ariaLabel": "底部导航",
@@ -479,6 +492,8 @@
     "accountApiProxyEnabled": "账号 {{label}} 已参与 API 反代。",
     "accountApiProxyDisabled": "账号 {{label}} 已退出 API 反代。",
     "accountApiProxyToggleFailed": "更新反代开关失败：{{error}}",
+    "accountAuthRefreshed": "账号 {{label}} 授权已刷新。",
+    "accountAuthRefreshFailed": "刷新账号授权失败：{{error}}",
     "accountsExported": "账号列表已导出",
     "accountsExportFailed": "导出账号列表失败：{{error}}",
     "deleteConfirm": "再次点击删除账号 {{label}} 以确认。",

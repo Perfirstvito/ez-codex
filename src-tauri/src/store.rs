@@ -157,7 +157,9 @@ pub(crate) fn sync_current_auth_account_on_startup_in_path(path: &Path) -> Resul
     let now = now_unix_seconds();
     let label = extracted
         .email
-        .clone()
+        .as_deref()
+        .and_then(email_account_name)
+        .map(ToString::to_string)
         .unwrap_or_else(|| format!("Codex {}", short_account(&extracted.account_id)));
 
     let stored = StoredAccount {
@@ -194,6 +196,14 @@ pub(crate) fn sync_current_auth_account_on_startup_in_path(path: &Path) -> Resul
     store.accounts.push(stored);
     save_store_to_path(path, &store)?;
     Ok(())
+}
+
+fn email_account_name(email: &str) -> Option<&str> {
+    email
+        .trim()
+        .split_once('@')
+        .map(|(name, _)| name.trim())
+        .filter(|name| !name.is_empty())
 }
 
 struct LatestAccountGroupAuthState {

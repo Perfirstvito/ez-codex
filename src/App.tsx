@@ -31,6 +31,7 @@ function App() {
         importingAccounts,
         oauthWaitingForCallback,
         exportingAccounts,
+        refreshingAuthAccountId,
         switchingId,
         renamingAccountId,
         pendingDeleteId,
@@ -87,6 +88,7 @@ function App() {
         onImportCurrentAuth,
         onCreateApiAccount,
         onImportAuthFiles,
+        onRefreshAccountAuth,
         onExportAccounts,
         loadApiProxyStatus,
         onSelectApiProxyUsageRange,
@@ -203,6 +205,7 @@ function App() {
                                 accounts={accounts}
                                 loading={loading}
                                 exportingAccounts={exportingAccounts}
+                                refreshingAuthAccountId={refreshingAuthAccountId}
                                 switchingId={switchingId}
                                 renamingAccountId={renamingAccountId}
                                 pendingDeleteId={pendingDeleteId}
@@ -214,6 +217,7 @@ function App() {
                                 }
                                 onSwitch={(account) => void onSwitch(account)}
                                 onDelete={(account) => void onDelete(account)}
+                                onRefreshAuth={(account) => void onRefreshAccountAuth(account)}
                             />
                         </div>
                     ) : activeTab === "proxy" ? (

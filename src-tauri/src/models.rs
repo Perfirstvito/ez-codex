@@ -6,6 +6,7 @@ use serde_json::Value;
 
 use crate::auth::account_group_key;
 use crate::auth::account_variant_key;
+use crate::auth::auth_access_token_valid_now;
 use crate::auth::extract_auth;
 
 fn default_api_proxy_port() -> u16 {
@@ -69,6 +70,18 @@ impl Default for AccountSourceKind {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum AccountPoolKind {
+    Free,
+    Plus,
+    Pro,
+    OtherPlan,
+    Relay,
+    AccessOnly,
+    Unavailable,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StoredAccount {
@@ -124,6 +137,7 @@ pub(crate) struct AccountSummary {
     pub(crate) id: String,
     pub(crate) label: String,
     pub(crate) source_kind: AccountSourceKind,
+    pub(crate) pool_kind: AccountPoolKind,
     pub(crate) email: Option<String>,
     pub(crate) account_key: String,
     pub(crate) account_id: String,
@@ -580,6 +594,35 @@ impl StoredAccount {
         )
     }
 
+    pub(crate) fn pool_kind(&self) -> AccountPoolKind {
+        if matches!(self.source_kind, AccountSourceKind::Relay) {
+            return AccountPoolKind::Relay;
+        }
+
+        if self.auth_refresh_blocked {
+            return if auth_access_token_valid_now(&self.auth_json) {
+                AccountPoolKind::AccessOnly
+            } else {
+                AccountPoolKind::Unavailable
+            };
+        }
+
+        let normalized_plan_type = self
+            .resolved_plan_type()
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_ascii_lowercase)
+            .unwrap_or_default();
+
+        match normalized_plan_type.as_str() {
+            "free" => AccountPoolKind::Free,
+            "plus" => AccountPoolKind::Plus,
+            "pro" => AccountPoolKind::Pro,
+            _ => AccountPoolKind::OtherPlan,
+        }
+    }
+
     pub(crate) fn to_summary(
         &self,
         current_account_key: Option<&str>,
@@ -598,6 +641,7 @@ impl StoredAccount {
             id: self.id.clone(),
             label: self.label.clone(),
             source_kind: self.source_kind.clone(),
+            pool_kind: self.pool_kind(),
             email: self.email.clone(),
             account_key,
             account_id: self.account_id.clone(),
@@ -754,6 +798,8 @@ fn duplicate_account_merge_score(account: &StoredAccount) -> (u8, u8, u8, u8, i6
 #[cfg(test)]
 mod tests {
     use super::dedupe_account_variants;
+    use super::AccountPoolKind;
+    use super::AccountSourceKind;
     use super::StoredAccount;
     use super::UsageSnapshot;
     use super::UsageWindow;
@@ -783,6 +829,11 @@ mod tests {
         let payload = URL_SAFE_NO_PAD.encode(format!(
             r#"{{"email":"shared@example.com","https://api.openai.com/auth":{{"chatgpt_account_id":"account-1","chatgpt_plan_type":"{plan_type}"}}}}"#
         ));
+        format!("header.{payload}.signature")
+    }
+
+    fn jwt_with_exp(exp: i64) -> String {
+        let payload = URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{exp}}}"#));
         format!("header.{payload}.signature")
     }
 
@@ -1004,6 +1055,93 @@ mod tests {
         };
 
         assert_eq!(account.resolved_plan_type().as_deref(), Some("team"));
+    }
+
+    #[test]
+    fn pool_kind_maps_chatgpt_and_relay_accounts() {
+        let free = stored_account("free", "free", "account-1", Some("free"), None, 1);
+        let plus = stored_account("plus", "plus", "account-1", Some("plus"), None, 1);
+        let pro = stored_account("pro", "pro", "account-1", Some("pro"), None, 1);
+        let other = stored_account("team", "team", "account-1", Some("team"), None, 1);
+        let relay = StoredAccount {
+            id: "relay".to_string(),
+            label: "relay".to_string(),
+            source_kind: AccountSourceKind::Relay,
+            principal_id: None,
+            email: None,
+            account_id: "relay-account".to_string(),
+            plan_type: Some("free".to_string()),
+            auth_json: json!({ "kind": "relay" }),
+            api_base_url: Some("https://relay.example.com".to_string()),
+            api_key: Some("key".to_string()),
+            model_name: Some("gpt-4o".to_string()),
+            balance_text: None,
+            profile_auth_path: None,
+            profile_config_path: None,
+            profile_auth_ready: false,
+            profile_config_ready: false,
+            profile_integrity_error: None,
+            profile_last_validated_at: None,
+            profile_last_validation_error: None,
+            added_at: 1,
+            updated_at: 1,
+            usage: None,
+            usage_error: None,
+            auth_refresh_blocked: false,
+            auth_refresh_error: None,
+            api_proxy_enabled: true,
+            codex_keepalive_last_at: None,
+        };
+
+        assert_eq!(free.pool_kind(), AccountPoolKind::Free);
+        assert_eq!(plus.pool_kind(), AccountPoolKind::Plus);
+        assert_eq!(pro.pool_kind(), AccountPoolKind::Pro);
+        assert_eq!(other.pool_kind(), AccountPoolKind::OtherPlan);
+        assert_eq!(relay.pool_kind(), AccountPoolKind::Relay);
+    }
+
+    #[test]
+    fn pool_kind_distinguishes_blocked_access_only_and_unavailable_accounts() {
+        let mut access_only = stored_account(
+            "access-only",
+            "access-only",
+            "account-1",
+            Some("plus"),
+            None,
+            1,
+        );
+        access_only.auth_refresh_blocked = true;
+        access_only.auth_json = json!({
+            "tokens": {
+                "access_token": jwt_with_exp(4_102_444_800)
+            }
+        });
+
+        let mut unavailable = stored_account(
+            "unavailable",
+            "unavailable",
+            "account-1",
+            Some("plus"),
+            None,
+            1,
+        );
+        unavailable.auth_refresh_blocked = true;
+        unavailable.auth_json = json!({
+            "tokens": {
+                "access_token": jwt_with_exp(1)
+            }
+        });
+
+        assert_eq!(access_only.pool_kind(), AccountPoolKind::AccessOnly);
+        assert_eq!(unavailable.pool_kind(), AccountPoolKind::Unavailable);
+        assert_eq!(
+            access_only.to_summary(None, None).pool_kind,
+            AccountPoolKind::AccessOnly
+        );
+        assert_eq!(
+            unavailable.to_summary(None, None).pool_kind,
+            AccountPoolKind::Unavailable
+        );
     }
 
     #[test]

@@ -108,6 +108,8 @@
     "apiProxyEnabled": "Прокси включен",
     "apiProxyDisabled": "Прокси отключен",
     "apiProxyToggle": "Переключить участие в API прокси",
+    "refreshAuth": "Обновить токен авторизации",
+    "refreshingAuth": "Обновление авторизации",
     "reauthorize": "Переавторизовать аккаунт",
     "editAlias": "Изменить псевдоним",
     "aliasInputLabel": "Псевдоним аккаунта",
@@ -135,7 +137,18 @@
   },
   "accountsGrid": {
     "emptyTitle": "Пока нет аккаунтов",
-    "emptyDescription": "Нажмите «Добавить аккаунт». После авторизации он появится автоматически."
+    "emptyDescription": "Нажмите «Добавить аккаунт». После авторизации он появится автоматически.",
+    "emptyFilteredTitle": "В этом пуле нет аккаунтов",
+    "emptyFilteredDescription": "Вернитесь ко всем пулам или добавьте аккаунт в этот пул.",
+    "poolFilterAriaLabel": "Фильтр пула аккаунтов",
+    "poolAll": "Все",
+    "poolFree": "Пул Free",
+    "poolPlus": "Пул Plus",
+    "poolPro": "Пул Pro",
+    "poolOtherPlan": "Пул других тарифов",
+    "poolRelay": "Пул верхнего канала",
+    "poolAccessOnly": "Временно доступен по access",
+    "poolUnavailable": "Недоступные аккаунты"
   },
   "bottomDock": {
     "ariaLabel": "Нижняя навигация",
@@ -479,6 +492,8 @@
     "accountApiProxyEnabled": "{{label}} участвует в API прокси.",
     "accountApiProxyDisabled": "{{label}} больше не участвует в API прокси.",
     "accountApiProxyToggleFailed": "Не удалось обновить переключатель API прокси: {{error}}",
+    "accountAuthRefreshed": "Авторизация {{label}} обновлена.",
+    "accountAuthRefreshFailed": "Не удалось обновить авторизацию аккаунта: {{error}}",
     "accountsExported": "Список аккаунтов экспортирован",
     "accountsExportFailed": "Не удалось экспортировать список аккаунтов: {{error}}",
     "deleteConfirm": "Нажмите удалить еще раз, чтобы подтвердить удаление {{label}}.",

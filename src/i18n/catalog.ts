@@ -143,6 +143,8 @@ export type MessageCatalog = {
     apiProxyEnabled: string;
     apiProxyDisabled: string;
     apiProxyToggle: string;
+    refreshAuth: string;
+    refreshingAuth: string;
     reauthorize: string;
     editAlias: string;
     aliasInputLabel: string;
@@ -163,6 +165,17 @@ export type MessageCatalog = {
   accountsGrid: {
     emptyTitle: string;
     emptyDescription: string;
+    emptyFilteredTitle: string;
+    emptyFilteredDescription: string;
+    poolFilterAriaLabel: string;
+    poolAll: string;
+    poolFree: string;
+    poolPlus: string;
+    poolPro: string;
+    poolOtherPlan: string;
+    poolRelay: string;
+    poolAccessOnly: string;
+    poolUnavailable: string;
   };
   bottomDock: {
     ariaLabel: string;
@@ -477,6 +490,8 @@ export type MessageCatalog = {
     accountApiProxyEnabled: (label: string) => string;
     accountApiProxyDisabled: (label: string) => string;
     accountApiProxyToggleFailed: (error: string) => string;
+    accountAuthRefreshed: (label: string) => string;
+    accountAuthRefreshFailed: (error: string) => string;
     accountsExported: string;
     accountsExportFailed: (error: string) => string;
     deleteConfirm: (label: string) => string;
@@ -621,6 +636,10 @@ function compileLocale(raw: RawMessageCatalog): MessageCatalog {
         fillTemplate(raw.notices.accountApiProxyDisabled, { label }),
       accountApiProxyToggleFailed: (error) =>
         fillTemplate(raw.notices.accountApiProxyToggleFailed, { error }),
+      accountAuthRefreshed: (label) =>
+        fillTemplate(raw.notices.accountAuthRefreshed, { label }),
+      accountAuthRefreshFailed: (error) =>
+        fillTemplate(raw.notices.accountAuthRefreshFailed, { error }),
       accountsExportFailed: (error) =>
         fillTemplate(raw.notices.accountsExportFailed, { error }),
       deleteConfirm: (label) => fillTemplate(raw.notices.deleteConfirm, { label }),

@@ -668,6 +668,18 @@ async fn refresh_all_usage(
 }
 
 #[tauri::command]
+async fn refresh_account_auth(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Vec<AccountSummary>, String> {
+    let summaries =
+        account_service::refresh_account_auth_internal(&app, state.inner(), &id).await?;
+    let _ = tray::update_macos_tray_snapshot(&app, &summaries);
+    Ok(summaries)
+}
+
+#[tauri::command]
 async fn get_codex_token_usage() -> Result<token_usage::CodexTokenUsageSnapshot, String> {
     tauri::async_runtime::spawn_blocking(token_usage::collect_codex_token_usage_snapshot)
         .await
@@ -1497,6 +1509,7 @@ pub fn run() {
             update_account_label,
             update_account_api_proxy_enabled,
             refresh_all_usage,
+            refresh_account_auth,
             get_codex_token_usage,
             get_app_settings,
             update_app_settings,
