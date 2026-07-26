@@ -231,11 +231,15 @@ export function AccountCard({
     ? copy.accountCard.apiProxyEnabled
     : copy.accountCard.apiProxyDisabled;
   const footerErrors = [
+    selectedAccount.usageError,
     selectedAccount.profileIntegrityError,
     selectedAccount.profileLastValidationError,
     selectedAccount.authRefreshError,
-    selectedAccount.usageError,
-  ].filter((value, index, values): value is string => Boolean(value) && values.indexOf(value) === index);
+  ].filter(
+    (value, index, values): value is string =>
+      Boolean(value) && values.indexOf(value) === index,
+  );
+  const footerErrorMessage = footerErrors.join(" / ");
 
   const handleLaunch = () => {
     if (isSwitching) return;
@@ -285,12 +289,6 @@ export function AccountCard({
             {isRelay ? (
               <>
                 <span className="cardBadge planBadge apiBadge">{copy.accountCard.apiBadge}</span>
-                {selectedAccount.profileIntegrityError ? (
-                  <span className="cardBadge stateBadge">{copy.accountCard.profileIncomplete}</span>
-                ) : null}
-                {selectedAccount.profileLastValidationError ? (
-                  <span className="cardBadge stateBadge">{copy.accountCard.validationFailed}</span>
-                ) : null}
                 {selectedAccount.isCurrent ? (
                   <span className="planCurrentGlass" aria-hidden="true">
                     {copy.accountCard.currentStamp}
@@ -358,9 +356,11 @@ export function AccountCard({
               />
             </div>
           ) : (
-            <h3 className={selectedAccount.isCurrent ? "nameCurrent" : ""}>
-              {selectedAccount.label}
-            </h3>
+            <div className="cardNameRow">
+              <h3 className={selectedAccount.isCurrent ? "nameCurrent" : ""}>
+                {selectedAccount.label}
+              </h3>
+            </div>
           )}
         </div>
         <div className="cardActions">
@@ -499,11 +499,13 @@ export function AccountCard({
       ) : null}
 
       <footer className="cardFooter">
-        {footerErrors.map((message) => (
-          <p key={message} className="errorText">
-            {message}
-          </p>
-        ))}
+        <div className={`cardNoticeSlot ${footerErrorMessage ? "hasNotice" : ""}`}>
+          {footerErrorMessage ? (
+            <p className="errorText" title={footerErrorMessage}>
+              {footerErrorMessage}
+            </p>
+          ) : null}
+        </div>
         <button
           className={`ghost cardLaunchButton ${isSwitching ? "isBusy" : ""}`}
           onClick={handleLaunch}
