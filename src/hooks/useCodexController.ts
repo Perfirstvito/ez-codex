@@ -66,6 +66,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   apiProxySequentialFiveHourLimitPercent: 80,
   apiProxyDisabledModels: [],
   apiProxyAccountCooldownEnabled: true,
+  apiProxyAccountPoolFilter: "all",
   remoteServers: [],
   locale: DEFAULT_LOCALE,
   skippedUpdateVersion: null,

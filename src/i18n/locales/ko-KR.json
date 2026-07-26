@@ -189,6 +189,14 @@
     "loadBalanceLabel": "부하 분산",
     "loadBalanceAverage": "평균",
     "loadBalanceSequential": "순차",
+    "accountPoolLabel": "프록시 풀",
+    "accountPoolDescription": "선택한 풀의 계정만 API 프록시에 참여합니다.",
+    "accountPoolAll": "전체 풀",
+    "accountPoolFree": "Free 풀",
+    "accountPoolPlus": "Plus 풀",
+    "accountPoolPro": "Pro 풀",
+    "accountPoolOtherPlan": "기타 플랜 풀",
+    "accountPoolAccessOnly": "Access 임시 사용 가능",
     "sequentialFiveHourLimitLabel": "5h 한도",
     "sequentialFiveHourLimitDescription": "5h 사용량이 이 비율에 도달하면 다음 계정으로 전환합니다.",
     "accountCooldownLabel": "계정 쿨다운",
@@ -382,7 +390,9 @@
       "uncheckedText": "꺼짐"
     },
     "codexLaunchPath": {
-      "label": "Codex 실행 경로 지정"
+      "label": "Codex 실행 경로 지정",
+      "autoDetected": "자동 감지: ",
+      "notDetected": "로컬 Codex 앱을 찾지 못했습니다. codex app 명령으로 대체합니다"
     },
     "syncOpencode": {
       "label": "Opencode OpenAI 인증 동기화",

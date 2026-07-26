@@ -20,6 +20,7 @@ import type {
   ApiProxyUsageStats,
   CloudflaredStatus,
   CloudflaredTunnelMode,
+  ApiProxyAccountPoolFilter,
   ApiProxyLoadBalanceMode,
   RemoteAuthMode,
   RemoteProxyStatus,
@@ -63,6 +64,7 @@ type ApiProxyPanelProps = {
   loadBalanceMode: ApiProxyLoadBalanceMode;
   sequentialFiveHourLimitPercent: number;
   accountCooldownEnabled: boolean;
+  accountPoolFilter: ApiProxyAccountPoolFilter;
   apiProxySupportedModels: string[];
   apiProxyDisabledModels: string[];
   remoteServers: RemoteServerConfig[];
@@ -94,6 +96,7 @@ type ApiProxyPanelProps = {
   onUpdateLoadBalanceMode: (mode: ApiProxyLoadBalanceMode) => Promise<void> | void;
   onUpdateSequentialFiveHourLimitPercent: (percent: number) => Promise<void> | void;
   onToggleAccountCooldown: (enabled: boolean) => Promise<void> | void;
+  onUpdateAccountPoolFilter: (filter: ApiProxyAccountPoolFilter) => Promise<void> | void;
   onUpdateApiProxyDisabledModels: (models: string[]) => Promise<void> | void;
   onUpdateRemoteServers: (servers: RemoteServerConfig[]) => void;
   onRefreshRemoteStatus: (server: RemoteServerConfig) => void;
@@ -1626,6 +1629,7 @@ export function ApiProxyPanel({
   loadBalanceMode,
   sequentialFiveHourLimitPercent,
   accountCooldownEnabled,
+  accountPoolFilter,
   apiProxySupportedModels,
   apiProxyDisabledModels,
   remoteServers,
@@ -1657,6 +1661,7 @@ export function ApiProxyPanel({
   onUpdateLoadBalanceMode,
   onUpdateSequentialFiveHourLimitPercent,
   onToggleAccountCooldown,
+  onUpdateAccountPoolFilter,
   onUpdateApiProxyDisabledModels,
   onUpdateRemoteServers,
   onRefreshRemoteStatus,
@@ -1728,6 +1733,24 @@ export function ApiProxyPanel({
       { id: "sequential" as const, label: proxyCopy.loadBalanceSequential },
     ],
     [proxyCopy.loadBalanceAverage, proxyCopy.loadBalanceSequential],
+  );
+  const accountPoolOptions = useMemo<MultiSelectOption<ApiProxyAccountPoolFilter>[]>(
+    () => [
+      { id: "all", label: proxyCopy.accountPoolAll },
+      { id: "free", label: proxyCopy.accountPoolFree },
+      { id: "plus", label: proxyCopy.accountPoolPlus },
+      { id: "pro", label: proxyCopy.accountPoolPro },
+      { id: "otherPlan", label: proxyCopy.accountPoolOtherPlan },
+      { id: "accessOnly", label: proxyCopy.accountPoolAccessOnly },
+    ],
+    [
+      proxyCopy.accountPoolAccessOnly,
+      proxyCopy.accountPoolAll,
+      proxyCopy.accountPoolFree,
+      proxyCopy.accountPoolOtherPlan,
+      proxyCopy.accountPoolPlus,
+      proxyCopy.accountPoolPro,
+    ],
   );
   const portInput = portDraft ?? String(status.port ?? savedPort ?? DEFAULT_PROXY_PORT);
   const effectiveSequentialLimit = sequentialLimitDraft ?? sequentialFiveHourLimitPercent;
@@ -2263,6 +2286,24 @@ export function ApiProxyPanel({
                 disabled={savingSettings}
                 onChange={(mode) => {
                   void onUpdateLoadBalanceMode(mode);
+                }}
+              />
+            </div>
+
+            <div className="proxyBalanceHeader proxyPoolHeader">
+              <div className="proxyBalanceCopy">
+                <span className="proxyLabel">{proxyCopy.accountPoolLabel}</span>
+                <p>{proxyCopy.accountPoolDescription}</p>
+              </div>
+              <EditorMultiSelect
+                className="proxyPoolPicker"
+                options={accountPoolOptions}
+                value={accountPoolFilter}
+                ariaLabel={proxyCopy.accountPoolLabel}
+                placeholder={proxyCopy.accountPoolAll}
+                disabled={savingSettings}
+                onChange={(filter) => {
+                  void onUpdateAccountPoolFilter(filter);
                 }}
               />
             </div>

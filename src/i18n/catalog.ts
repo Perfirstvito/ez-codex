@@ -203,6 +203,14 @@ export type MessageCatalog = {
     loadBalanceLabel: string;
     loadBalanceAverage: string;
     loadBalanceSequential: string;
+    accountPoolLabel: string;
+    accountPoolDescription: string;
+    accountPoolAll: string;
+    accountPoolFree: string;
+    accountPoolPlus: string;
+    accountPoolPro: string;
+    accountPoolOtherPlan: string;
+    accountPoolAccessOnly: string;
     sequentialFiveHourLimitLabel: string;
     sequentialFiveHourLimitDescription: string;
     accountCooldownLabel: string;
@@ -394,6 +402,8 @@ export type MessageCatalog = {
     };
     codexLaunchPath: {
       label: string;
+      autoDetected: string;
+      notDetected: string;
     };
     syncOpencode: {
       label: string;

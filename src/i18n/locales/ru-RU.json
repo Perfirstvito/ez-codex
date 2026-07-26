@@ -189,6 +189,14 @@
     "loadBalanceLabel": "Балансировка",
     "loadBalanceAverage": "Средний",
     "loadBalanceSequential": "Последовательно",
+    "accountPoolLabel": "Пул прокси",
+    "accountPoolDescription": "В API прокси участвуют только аккаунты выбранного пула.",
+    "accountPoolAll": "Все пулы",
+    "accountPoolFree": "Пул Free",
+    "accountPoolPlus": "Пул Plus",
+    "accountPoolPro": "Пул Pro",
+    "accountPoolOtherPlan": "Пул другого плана",
+    "accountPoolAccessOnly": "Access временно доступен",
     "sequentialFiveHourLimitLabel": "Лимит 5h",
     "sequentialFiveHourLimitDescription": "При достижении этого процента использования 5h переключаться на следующий аккаунт.",
     "accountCooldownLabel": "Охлаждение аккаунтов",
@@ -382,7 +390,9 @@
       "uncheckedText": "Выкл"
     },
     "codexLaunchPath": {
-      "label": "Указать путь запуска Codex"
+      "label": "Указать путь запуска Codex",
+      "autoDetected": "Автоопределение: ",
+      "notDetected": "Локальное приложение Codex не найдено; будет использована команда codex app"
     },
     "syncOpencode": {
       "label": "Синхронизировать Opencode OpenAI auth",

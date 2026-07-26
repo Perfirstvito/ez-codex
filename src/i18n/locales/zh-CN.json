@@ -189,6 +189,14 @@
     "loadBalanceLabel": "负载均衡",
     "loadBalanceAverage": "平均",
     "loadBalanceSequential": "逐个",
+    "accountPoolLabel": "反代号池",
+    "accountPoolDescription": "只让选中的号池参与 API 反代。",
+    "accountPoolAll": "全部号池",
+    "accountPoolFree": "Free 号池",
+    "accountPoolPlus": "Plus 号池",
+    "accountPoolPro": "Pro 号池",
+    "accountPoolOtherPlan": "其他套餐号池",
+    "accountPoolAccessOnly": "Access 临时可用",
     "sequentialFiveHourLimitLabel": "5h 限制",
     "sequentialFiveHourLimitDescription": "当 5h 使用率达到该百分比时切换到下一个账号。",
     "accountCooldownLabel": "账号冷却",
@@ -382,7 +390,9 @@
       "uncheckedText": "关闭"
     },
     "codexLaunchPath": {
-      "label": "指定codex启动路径"
+      "label": "指定codex启动路径",
+      "autoDetected": "自动检测：",
+      "notDetected": "未检测到本机 Codex 应用，将回退到 codex app 命令"
     },
     "syncOpencode": {
       "label": "同步 Opencode",

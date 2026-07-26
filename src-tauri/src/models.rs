@@ -70,7 +70,7 @@ impl Default for AccountSourceKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum AccountPoolKind {
     Free,
@@ -80,6 +80,61 @@ pub(crate) enum AccountPoolKind {
     Relay,
     AccessOnly,
     Unavailable,
+}
+
+/// API 反代的账号池筛选。
+///
+/// 只列出反代真正能命中的池子：`Relay` 账号没有 ChatGPT 登录态，
+/// `Unavailable` 账号的 access_token 已过期，两者都会被
+/// `account_to_proxy_candidate` 直接丢弃，作为筛选项只会让反代永远选不到账号。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum ApiProxyAccountPoolFilter {
+    #[default]
+    All,
+    Free,
+    Plus,
+    Pro,
+    OtherPlan,
+    AccessOnly,
+}
+
+/// 宽容地读取账号池筛选。
+///
+/// 账号存储是用户可写文件，历史版本里还写过已下线的筛选项（如 `relay`）。
+/// 遇到不认识的值时降级成 `All`，避免让整个 `AppSettings` 反序列化失败、
+/// 进而触发账号存储的损坏恢复流程。
+fn deserialize_api_proxy_account_pool_filter<'de, D>(
+    deserializer: D,
+) -> Result<ApiProxyAccountPoolFilter, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<String>::deserialize(deserializer)?;
+    Ok(raw
+        .and_then(|value| serde_json::from_value(Value::String(value)).ok())
+        .unwrap_or_default())
+}
+
+impl ApiProxyAccountPoolFilter {
+    /// 返回该筛选项要求的账号池；`All` 不做限制。
+    fn required_pool_kind(self) -> Option<AccountPoolKind> {
+        match self {
+            Self::All => None,
+            Self::Free => Some(AccountPoolKind::Free),
+            Self::Plus => Some(AccountPoolKind::Plus),
+            Self::Pro => Some(AccountPoolKind::Pro),
+            Self::OtherPlan => Some(AccountPoolKind::OtherPlan),
+            Self::AccessOnly => Some(AccountPoolKind::AccessOnly),
+        }
+    }
+
+    pub(crate) fn matches_account(self, account: &StoredAccount) -> bool {
+        match self.required_pool_kind() {
+            Some(kind) => account.pool_kind() == kind,
+            None => true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -479,6 +534,11 @@ pub(crate) struct AppSettings {
     pub(crate) api_proxy_disabled_models: Vec<String>,
     #[serde(default = "default_api_proxy_account_cooldown_enabled")]
     pub(crate) api_proxy_account_cooldown_enabled: bool,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_api_proxy_account_pool_filter"
+    )]
+    pub(crate) api_proxy_account_pool_filter: ApiProxyAccountPoolFilter,
     #[serde(default)]
     pub(crate) api_proxy_sequential_account_key: Option<String>,
     pub(crate) remote_servers: Vec<RemoteServerConfig>,
@@ -507,6 +567,7 @@ impl Default for AppSettings {
                 default_api_proxy_sequential_five_hour_limit_percent(),
             api_proxy_disabled_models: Vec::new(),
             api_proxy_account_cooldown_enabled: default_api_proxy_account_cooldown_enabled(),
+            api_proxy_account_pool_filter: ApiProxyAccountPoolFilter::default(),
             api_proxy_sequential_account_key: None,
             remote_servers: Vec::new(),
             api_proxy_api_key: None,
@@ -534,6 +595,7 @@ pub(crate) struct AppSettingsPatch {
     pub(crate) api_proxy_sequential_five_hour_limit_percent: Option<f64>,
     pub(crate) api_proxy_disabled_models: Option<Vec<String>>,
     pub(crate) api_proxy_account_cooldown_enabled: Option<bool>,
+    pub(crate) api_proxy_account_pool_filter: Option<ApiProxyAccountPoolFilter>,
     pub(crate) remote_servers: Option<Vec<RemoteServerConfig>>,
     pub(crate) locale: Option<AppLocale>,
     pub(crate) skipped_update_version: Option<Option<String>>,
@@ -800,6 +862,8 @@ mod tests {
     use super::dedupe_account_variants;
     use super::AccountPoolKind;
     use super::AccountSourceKind;
+    use super::ApiProxyAccountPoolFilter;
+    use super::AppSettings;
     use super::StoredAccount;
     use super::UsageSnapshot;
     use super::UsageWindow;
@@ -1142,6 +1206,64 @@ mod tests {
             unavailable.to_summary(None, None).pool_kind,
             AccountPoolKind::Unavailable
         );
+    }
+
+    #[test]
+    fn api_proxy_pool_filter_matches_only_its_own_pool() {
+        let free = stored_account("free", "free", "account-1", Some("free"), None, 1);
+        let pro = stored_account("pro", "pro", "account-1", Some("pro"), None, 1);
+
+        assert!(ApiProxyAccountPoolFilter::All.matches_account(&free));
+        assert!(ApiProxyAccountPoolFilter::All.matches_account(&pro));
+        assert!(ApiProxyAccountPoolFilter::Free.matches_account(&free));
+        assert!(!ApiProxyAccountPoolFilter::Free.matches_account(&pro));
+        assert!(ApiProxyAccountPoolFilter::Pro.matches_account(&pro));
+        assert!(!ApiProxyAccountPoolFilter::Pro.matches_account(&free));
+    }
+
+    #[test]
+    fn app_settings_downgrades_retired_pool_filter_instead_of_failing() {
+        // 历史版本写过 relay / unavailable，这两个筛选项已下线；
+        // 读到时应降级为 All，而不是让整份设置反序列化失败。
+        for retired in ["relay", "unavailable", "totally-unknown"] {
+            let settings: AppSettings =
+                serde_json::from_value(json!({ "apiProxyAccountPoolFilter": retired }))
+                    .unwrap_or_else(|error| panic!("{retired} 应能降级读取: {error}"));
+            assert_eq!(
+                settings.api_proxy_account_pool_filter,
+                ApiProxyAccountPoolFilter::All
+            );
+        }
+
+        let settings: AppSettings =
+            serde_json::from_value(json!({ "apiProxyAccountPoolFilter": "pro" }))
+                .expect("有效筛选项应正常读取");
+        assert_eq!(
+            settings.api_proxy_account_pool_filter,
+            ApiProxyAccountPoolFilter::Pro
+        );
+    }
+
+    #[test]
+    fn api_proxy_pool_filters_never_target_unproxyable_pools() {
+        // 反代会丢弃 relay / unavailable 账号，筛选项若指向这两类，
+        // 只会让用户选出一个永远无号可用的反代配置。
+        for filter in [
+            ApiProxyAccountPoolFilter::All,
+            ApiProxyAccountPoolFilter::Free,
+            ApiProxyAccountPoolFilter::Plus,
+            ApiProxyAccountPoolFilter::Pro,
+            ApiProxyAccountPoolFilter::OtherPlan,
+            ApiProxyAccountPoolFilter::AccessOnly,
+        ] {
+            assert!(
+                !matches!(
+                    filter.required_pool_kind(),
+                    Some(AccountPoolKind::Relay) | Some(AccountPoolKind::Unavailable)
+                ),
+                "{filter:?} 指向了反代无法使用的账号池"
+            );
+        }
     }
 
     #[test]

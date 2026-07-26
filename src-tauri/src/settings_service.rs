@@ -92,6 +92,9 @@ pub(crate) async fn update_app_settings_internal(
         if let Some(value) = patch.api_proxy_account_cooldown_enabled {
             store.settings.api_proxy_account_cooldown_enabled = value;
         }
+        if let Some(value) = patch.api_proxy_account_pool_filter {
+            store.settings.api_proxy_account_pool_filter = value;
+        }
         if let Some(value) = patch.remote_servers {
             store.settings.remote_servers = value;
         }

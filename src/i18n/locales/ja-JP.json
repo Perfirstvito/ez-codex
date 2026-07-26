@@ -189,6 +189,14 @@
     "loadBalanceLabel": "負荷分散",
     "loadBalanceAverage": "平均",
     "loadBalanceSequential": "順次",
+    "accountPoolLabel": "プロキシプール",
+    "accountPoolDescription": "選択したプールのアカウントだけを API プロキシに参加させます。",
+    "accountPoolAll": "すべてのプール",
+    "accountPoolFree": "Free プール",
+    "accountPoolPlus": "Plus プール",
+    "accountPoolPro": "Pro プール",
+    "accountPoolOtherPlan": "その他プランのプール",
+    "accountPoolAccessOnly": "Access 一時利用可",
     "sequentialFiveHourLimitLabel": "5h 上限",
     "sequentialFiveHourLimitDescription": "5h 使用率がこの割合に達したら次のアカウントへ切り替えます。",
     "accountCooldownLabel": "アカウント冷却",
@@ -382,7 +390,9 @@
       "uncheckedText": "オフ"
     },
     "codexLaunchPath": {
-      "label": "Codex 起動パスを指定"
+      "label": "Codex 起動パスを指定",
+      "autoDetected": "自動検出：",
+      "notDetected": "ローカルの Codex アプリが見つかりません。codex app コマンドにフォールバックします"
     },
     "syncOpencode": {
       "label": "Opencode OpenAI 認証を同期",

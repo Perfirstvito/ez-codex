@@ -189,6 +189,14 @@
     "loadBalanceLabel": "Load balancing",
     "loadBalanceAverage": "Average",
     "loadBalanceSequential": "Sequential",
+    "accountPoolLabel": "Proxy pool",
+    "accountPoolDescription": "Only accounts in the selected pool participate in API proxying.",
+    "accountPoolAll": "All pools",
+    "accountPoolFree": "Free pool",
+    "accountPoolPlus": "Plus pool",
+    "accountPoolPro": "Pro pool",
+    "accountPoolOtherPlan": "Other plan pool",
+    "accountPoolAccessOnly": "Access temporarily usable",
     "sequentialFiveHourLimitLabel": "5h limit",
     "sequentialFiveHourLimitDescription": "Switch to the next account when 5h usage reaches this percent.",
     "accountCooldownLabel": "Account cooldown",
@@ -382,7 +390,9 @@
       "uncheckedText": "Off"
     },
     "codexLaunchPath": {
-      "label": "Specify Codex launch path"
+      "label": "Specify Codex launch path",
+      "autoDetected": "Auto-detected: ",
+      "notDetected": "No local Codex app found; will fall back to the codex app command"
     },
     "syncOpencode": {
       "label": "Sync Opencode OpenAI auth",

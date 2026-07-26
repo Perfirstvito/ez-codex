@@ -54,6 +54,16 @@ export type AccountPoolKind =
   | "relay"
   | "accessOnly"
   | "unavailable";
+/**
+ * API 反代的账号池筛选。
+ *
+ * 只包含反代真正能命中的池子：relay 账号没有 ChatGPT 登录态，
+ * unavailable 账号的 access_token 已过期，两者都会被后端直接丢弃，
+ * 作为筛选项只会让反代永远选不到账号。需与 Rust 侧枚举保持一致。
+ */
+export type ApiProxyAccountPoolFilter =
+  | "all"
+  | Exclude<AccountPoolKind, "relay" | "unavailable">;
 
 export type AccountSummary = {
   id: string;
@@ -298,6 +308,7 @@ export type AppSettings = {
   apiProxySequentialFiveHourLimitPercent: number;
   apiProxyDisabledModels: string[];
   apiProxyAccountCooldownEnabled: boolean;
+  apiProxyAccountPoolFilter: ApiProxyAccountPoolFilter;
   remoteServers: RemoteServerConfig[];
   locale: AppLocale;
   skippedUpdateVersion: string | null;

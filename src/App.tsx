@@ -13,6 +13,7 @@ import { SettingsPanel } from "./components/SettingsPanel";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { useCodexController } from "./hooks/useCodexController";
 import { useThemeMode } from "./hooks/useThemeMode";
+import { countApiProxyCandidates } from "./utils/apiProxyAccounts";
 
 type AppTab = "accounts" | "proxy" | "settings";
 
@@ -229,12 +230,16 @@ function App() {
                             apiProxyUsageLoading={apiProxyUsageLoading}
                             apiProxyUsageClearing={apiProxyUsageClearing}
                             cloudflaredStatus={cloudflaredStatus}
-                            accountCount={accounts.length}
+                            accountCount={countApiProxyCandidates(
+                                accounts,
+                                settings.apiProxyAccountPoolFilter,
+                            )}
                             autoStartEnabled={settings.autoStartApiProxy}
                             savedPort={settings.apiProxyPort}
                             loadBalanceMode={settings.apiProxyLoadBalanceMode}
                             sequentialFiveHourLimitPercent={settings.apiProxySequentialFiveHourLimitPercent}
                             accountCooldownEnabled={settings.apiProxyAccountCooldownEnabled}
+                            accountPoolFilter={settings.apiProxyAccountPoolFilter}
                             apiProxySupportedModels={apiProxySupportedModels}
                             apiProxyDisabledModels={settings.apiProxyDisabledModels}
                             remoteServers={settings.remoteServers}
@@ -286,6 +291,11 @@ function App() {
                                     { apiProxyAccountCooldownEnabled: enabled },
                                     { silent: true, keepInteractive: true },
                                 ).then(() => loadApiProxyStatus())}
+                            onUpdateAccountPoolFilter={(filter) =>
+                                updateSettings(
+                                    { apiProxyAccountPoolFilter: filter },
+                                    { silent: true, keepInteractive: true },
+                                )}
                             onUpdateApiProxyDisabledModels={(models) =>
                                 updateSettings(
                                     { apiProxyDisabledModels: models },

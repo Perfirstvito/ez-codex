@@ -2866,12 +2866,14 @@ async fn load_proxy_candidate_selection(
     let _guard = storage.store_lock.lock().await;
     let store = load_store_from_path(&account_store_path_from_data_dir(&storage.data_dir))?;
     let load_balance = ProxyLoadBalanceConfig::from_settings(&store.settings);
+    let account_pool_filter = store.settings.api_proxy_account_pool_filter;
     let settings = store.settings.clone();
 
     let mut deduped: HashMap<String, ProxyCandidate> = HashMap::new();
     for candidate in store
         .accounts
         .into_iter()
+        .filter(|account| account_pool_filter.matches_account(account))
         .filter_map(account_to_proxy_candidate)
     {
         match deduped.get(&candidate.account_key) {

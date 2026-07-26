@@ -754,8 +754,31 @@
   min-width: 172px;
 }
 
-.proxyModePicker .editorPickerTrigger {
+.proxyPoolPicker {
+  width: 220px;
+  min-width: 190px;
+}
+
+.proxyModePicker .editorPickerTrigger,
+.proxyPoolPicker .editorPickerTrigger {
   min-height: 38px;
+}
+
+.proxyPoolHeader {
+  align-items: flex-start;
+}
+
+.proxyBalanceCopy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.proxyBalanceCopy p {
+  max-width: 260px;
+  margin: 0;
+  color: var(--subtle);
+  font: 500 0.76rem/1.45 var(--font-ui);
 }
 
 .proxySequentialLimit {
