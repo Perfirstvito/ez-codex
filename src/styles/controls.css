@@ -630,6 +630,16 @@
   overflow-wrap: anywhere;
 }
 
+/* 未指定启动路径时展示后端自动探测结果，整体压暗以区别于用户显式设置的路径。 */
+.settingPathValueAuto {
+  opacity: 0.7;
+}
+
+.settingPathValueAuto em {
+  font-family: var(--font-ui);
+  font-style: normal;
+}
+
 .settingPathClearButton {
   min-width: 38px;
   padding: 0;

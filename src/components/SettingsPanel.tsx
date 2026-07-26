@@ -58,6 +58,7 @@ export function SettingsPanel({
   const { copy, locale, localeOptions, setLocale } = useI18n();
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [pickingCodexLaunchPathKind, setPickingCodexLaunchPathKind] = useState<"file" | "directory" | null>(null);
+  const [detectedCodexAppPath, setDetectedCodexAppPath] = useState<string | null>(null);
   const languageLabel = copy.topBar.languagePicker;
   const languageOptions = localeOptions.map((item) => ({
     id: item.code,
@@ -72,6 +73,24 @@ export function SettingsPanel({
       .then((version) => {
         if (!cancelled) {
           setAppVersion(version);
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // 未显式指定启动路径时，后端会自动探测本机 Codex 应用；这里把探测结果直接展示出来，
+  // 让用户知道“留空”到底会启动哪个程序。
+  useEffect(() => {
+    let cancelled = false;
+
+    void invoke<string | null>("detect_codex_app")
+      .then((path) => {
+        if (!cancelled) {
+          setDetectedCodexAppPath(path);
         }
       })
       .catch(() => {});
@@ -194,7 +213,16 @@ export function SettingsPanel({
             <div className="settingFieldGroup">
               {settings.codexLaunchPath ? (
                 <span className="settingPathValue">{settings.codexLaunchPath}</span>
-              ) : null}
+              ) : (
+                <span className="settingPathValue settingPathValueAuto">
+                  <em>
+                    {detectedCodexAppPath
+                      ? copy.settings.codexLaunchPath.autoDetected
+                      : copy.settings.codexLaunchPath.notDetected}
+                  </em>
+                  {detectedCodexAppPath}
+                </span>
+              )}
               <div className="settingActionGroup">
                 {settings.codexLaunchPath ? (
                   <button
