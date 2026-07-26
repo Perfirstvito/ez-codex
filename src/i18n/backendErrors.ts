@@ -41,24 +41,12 @@ const DEACTIVATED_ACCOUNT_MESSAGE = phrases(
 
 const REPLACEMENTS: PhraseReplacement[] = [
   {
-    source: "账号被封禁，请检查邮箱",
-    target: phrases(
-      "账号被封禁，请检查邮箱",
-      "This account has been deactivated. Please check your email.",
-      "このアカウントは停止されています。メールを確認してください。",
-      "이 계정은 비활성화되었습니다. 이메일을 확인하세요.",
-      "Этот аккаунт деактивирован. Проверьте электронную почту."
-    ),
+    source: DEACTIVATED_ACCOUNT_MESSAGE["zh-CN"],
+    target: DEACTIVATED_ACCOUNT_MESSAGE,
   },
   {
-    source: "授权过期，请重新登录授权。",
-    target: phrases(
-      "授权过期，请重新登录授权。",
-      "Authorization expired. Please sign in again.",
-      "認証の有効期限が切れました。再度ログインして認可してください。",
-      "인증이 만료되었습니다. 다시 로그인하여 인증하세요.",
-      "Срок авторизации истек. Войдите снова."
-    ),
+    source: AUTH_EXPIRED_MESSAGE["zh-CN"],
+    target: AUTH_EXPIRED_MESSAGE,
   },
   {
     source: "当前账号不是 ChatGPT 登录模式，无法读取 Codex 5h/1week 用量。请先执行 codex login。",

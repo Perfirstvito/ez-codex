@@ -13,12 +13,20 @@
 
 ## 1. 当前反代的定位
 
+> 本文中的代码位置均为仓库相对路径，以仓库根目录为基准。
+
 ### 本地入口
 
 - `GET /health`
 - `GET /v1/models`
 - `POST /v1/chat/completions`
 - `POST /v1/responses`
+- `GET /v1/responses`（WebSocket 升级，见第 13.3 节）
+- `POST /v1/images/generations`
+- `POST /v1/images/edits`
+- `POST /v1/images/variations`
+
+其余 `/v1/*` 路径统一由 fallback 返回“不支持”。
 
 ### 上游入口
 
@@ -76,8 +84,8 @@ sequenceDiagram
 
 前端入口在：
 
-- `/Users/zuozuo/Desktop/app/codex-tools/src/components/ApiProxyPanel.tsx`
-- `/Users/zuozuo/Desktop/app/codex-tools/src/hooks/useCodexController.ts`
+- `src/components/ApiProxyPanel.tsx`
+- `src/hooks/useCodexController.ts`
 
 用户在面板点击“启动 API 反代”后：
 
@@ -93,7 +101,7 @@ sequenceDiagram
 
 Tauri 命令入口在：
 
-- `/Users/zuozuo/Desktop/app/codex-tools/src-tauri/src/lib.rs`
+- `src-tauri/src/lib.rs`
 
 相关命令：
 
@@ -105,7 +113,7 @@ Tauri 命令入口在：
 
 后端运行态在：
 
-- `/Users/zuozuo/Desktop/app/codex-tools/src-tauri/src/state.rs`
+- `src-tauri/src/state.rs`
 
 这里维护：
 
@@ -119,7 +127,7 @@ Tauri 命令入口在：
 
 启动逻辑在：
 
-- `/Users/zuozuo/Desktop/app/codex-tools/src-tauri/src/proxy_service.rs`
+- `src-tauri/src/proxy_service.rs`
 
 `start_api_proxy_internal(...)` 做的事情是：
 
@@ -208,13 +216,18 @@ Tauri 命令入口在：
 
 ## 8. 账号池是怎么参与反代的
 
-账号来源：
+账号来源是应用数据目录下的 `accounts.json`，目录由 Tauri 按平台解析（应用标识 `com.carry.codex-tools`）：
 
-- `/Users/zuozuo/Library/Application Support/com.carry.codex-tools/accounts.json`
+- macOS：`~/Library/Application Support/com.carry.codex-tools/`
+- Windows：`%APPDATA%\com.carry.codex-tools\`
+- Linux：`~/.config/com.carry.codex-tools/`
+- `codex-tools-proxyd`：由 `--data-dir` 指定，默认 `~/.codex-tools-proxyd`
+
+调试构建下可用 `CODEX_TOOLS_DEV_DATA_DIR` 覆盖该目录，详见 `src-tauri/src/app_paths.rs`。
 
 数据结构定义在：
 
-- `/Users/zuozuo/Desktop/app/codex-tools/src-tauri/src/models.rs`
+- `src-tauri/src/models.rs`
 
 每个账号核心字段有：
 
@@ -234,22 +247,66 @@ Tauri 命令入口在：
 
 候选账号在每次请求时重新读取，并重新排序，不做固定缓存。
 
-排序规则：
+### 9.1 谁能成为候选账号
 
-1. 优先 `free` 账号
-2. 再比较 `1week` 剩余额度
-3. 再比较 `5h` 剩余额度
-4. 最后按标签名排序
+`account_to_proxy_candidate(...)` 会丢弃这几类账号：
 
-也就是：
+- 在账号卡片上关掉了「参与反代」的账号
+- 取不出 ChatGPT 登录态的账号（API 中转站条目就属于这类）
+- 刷新已被停用且 `access_token` 也已过期的账号
 
-- `free` 计划会优先于其他计划
-- 在同一类计划中，优先挑“更有余量”的账号
+因此 relay（上游渠道）和 unavailable（不可用）这两个账号池永远不会进入反代，
+账号池筛选也不提供这两个选项。
+
+### 9.2 账号池筛选
+
+`设置 → 反代号池`（`api_proxy_account_pool_filter`）可以把反代限定到某一类账号：
+
+- `all`：不限制
+- `free` / `plus` / `pro` / `otherPlan`：按套餐限定
+- `accessOnly`：只用「刷新已停用但 access_token 仍有效」的账号
+
+筛选在 `load_proxy_candidate_selection(...)` 里先于去重执行。
+前端面板顶部的「可用账号」数量同样按这个口径统计
+（`src/utils/apiProxyAccounts.ts`），所以面板显示 0 时启动按钮就是禁用的。
+
+### 9.3 排序规则
+
+`compare_proxy_candidates(...)` 依次比较：
+
+1. 刷新被停用的账号排在前面（趁 `access_token` 还没过期先用掉）
+2. `free` 计划优先于其他计划
+3. `1week` 已用百分比更低的优先
+4. `5h` 已用百分比更低的优先
+5. 最后按标签名、账号键稳定排序
+
+### 9.4 负载均衡模式
+
+`api_proxy_load_balance_mode` 有两种：
+
+- `average`：完全按上面的排序结果，每次请求都重新挑“最有余量”的账号
+- `sequential`：粘住当前账号，直到它的 `5h` 使用率超过
+  `api_proxy_sequential_five_hour_limit_percent`（默认 80%）才切下一个
+
+`sequential` 模式下当前账号会持久化到 `api_proxy_sequential_account_key`，
+重启后继续从同一个账号开始。
 
 对应逻辑：
 
-- `load_proxy_candidates(...)`
+- `load_proxy_candidate_selection(...)`
+- `order_proxy_candidates_for_request(...)`
 - `compare_proxy_candidates(...)`
+
+### 9.5 账号冷却
+
+`api_proxy_account_cooldown_enabled` 打开时（默认打开），账号因额度/限流类错误失败后
+会进入 180 秒冷却，冷却期内不再被选中。冷却状态通过 `ApiProxyStatus.accountCooldowns`
+回传给前端展示。
+
+对应逻辑：
+
+- `proxy_candidates_after_cooldowns(...)`
+- `record_proxy_candidate_cooldown(...)`
 
 ## 10. 请求发到上游时带了什么
 
@@ -262,9 +319,9 @@ Tauri 命令入口在：
 - `Authorization: Bearer <candidate.access_token>`
 - `ChatGPT-Account-Id: <candidate.account_id>`
 - `Originator: codex_cli_rs`
-- `Version: 0.101.0`
+- `Version: 0.125.0`
 - `Session_id: <uuid>`
-- `User-Agent: codex_cli_rs/0.101.0 (...)`
+- `User-Agent: codex_cli_rs/0.125.0 (...)`
 - `Accept: text/event-stream`
 - `Content-Type: application/json`
 
@@ -403,6 +460,35 @@ OpenAI 里的：
    - usage
 5. 拼成一个普通的 OpenAI ChatCompletions JSON
 
+### 13.3 `GET /v1/responses`（WebSocket）
+
+`GET /v1/responses` 会走 WebSocket 升级，给需要长连接的客户端使用：
+
+1. 升级前同样校验本地 API Key
+2. 升级后等待客户端发来第一条 `response.create` 消息
+3. 把它按普通 `responses` 请求发到上游（仍然是 SSE）
+4. 再把上游 SSE 事件逐条转成 WebSocket 消息回推
+5. 收到 `response.completed` / `response.failed` 等终止事件后关闭连接
+
+不是 WebSocket 升级请求时返回 `426 Upgrade Required`。
+
+需要注意：**到上游的 WebSocket 直连目前是关闭的**。
+`should_use_responses_websocket(...)` 当前恒返回 `false`，
+所以 `connect_codex_websocket(...)` / `forward_codex_websocket_request_with_candidate(...)`
+这条上游直连路径虽然已经写好（含 `HTTP CONNECT` 代理隧道与
+`responses_websockets=2026-02-06` beta 头），但暂未启用，
+下游 WebSocket 的上游侧依然走 SSE。
+
+### 13.4 图片接口
+
+`/v1/images/generations`、`/v1/images/edits`、`/v1/images/variations`
+会被改写成一次带图片工具的 Codex `responses` 调用：
+
+- 控制模型默认 `gpt-5.5`，图片工具模型默认 `gpt-image-2`
+- `edits` / `variations` 走 multipart，图片和 mask 会转成 `input_image`
+- 只支持 `response_format=b64_json`，传 `url` 会直接报错
+- 上游返回后从 `response.output` 里抽出图片，拼成 OpenAI Images 响应
+
 ## 14. 失败重试与自动切号
 
 每次请求会按候选账号顺序尝试。
@@ -517,13 +603,12 @@ Cloudflared 不参与：
 
 明确限制：
 
-- 只支持：
-  - `GET /v1/models`
-  - `POST /v1/chat/completions`
-  - `POST /v1/responses`
-- 其他 `/v1/*` 路径目前直接返回不支持
+- 只支持第 1 节列出的那几条路径，其他 `/v1/*` 一律返回不支持
 - 模型列表是本地静态表，不是实时探测
 - `/v1/responses` 的流式是近似透传，不额外做深层语义改写
+- 图片接口只支持 `response_format=b64_json`
+- 到上游的 WebSocket 直连已实现但未启用（见 13.3）
+- API 中转站（relay）账号不参与反代，反代只用 ChatGPT/Codex 登录态
 - 核心目标是把最常用的聊天链路稳定打通
 
 ## 20. 代码位置索引
@@ -531,19 +616,21 @@ Cloudflared 不参与：
 如果你要继续看代码，优先看这些文件：
 
 - 启动、路由、转换、账号轮换：
-  - `/Users/zuozuo/Desktop/app/codex-tools/src-tauri/src/proxy_service.rs`
+  - `src-tauri/src/proxy_service.rs`
 - Tauri 命令：
-  - `/Users/zuozuo/Desktop/app/codex-tools/src-tauri/src/lib.rs`
+  - `src-tauri/src/lib.rs`
 - 运行态：
-  - `/Users/zuozuo/Desktop/app/codex-tools/src-tauri/src/state.rs`
-- 账号结构：
-  - `/Users/zuozuo/Desktop/app/codex-tools/src-tauri/src/models.rs`
+  - `src-tauri/src/state.rs`
+- 账号结构与设置项：
+  - `src-tauri/src/models.rs`
+- 独立代理进程：
+  - `src-tauri/src/proxy_daemon.rs`
 - 前端面板：
-  - `/Users/zuozuo/Desktop/app/codex-tools/src/components/ApiProxyPanel.tsx`
+  - `src/components/ApiProxyPanel.tsx`
 - 前端控制器：
-  - `/Users/zuozuo/Desktop/app/codex-tools/src/hooks/useCodexController.ts`
-- 调试脚本：
-  - `/Users/zuozuo/Desktop/app/codex-tools/scripts/test-codex-login-proxy.mjs`
+  - `src/hooks/useCodexController.ts`
+- 前端候选账号口径：
+  - `src/utils/apiProxyAccounts.ts`
 
 ## 21. 一个完整请求示例
 
@@ -600,28 +687,34 @@ curl http://127.0.0.1:8787/health
 ### 看模型列表
 
 ```bash
-npm run test:codex-login-proxy -- --api-key 你的sk
+curl http://127.0.0.1:8787/v1/models -H 'Authorization: Bearer 你的sk'
 ```
 
 ### 看聊天结果
 
 ```bash
-npm run test:codex-login-proxy -- --api-key 你的sk --prompt '1+1 等于几？只回答结果。'
+curl http://127.0.0.1:8787/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer 你的sk' \
+  -d '{"model":"gpt-5","stream":false,"messages":[{"role":"user","content":"1+1 等于几？只回答结果。"}]}'
 ```
 
 ### 保留原始响应
 
+加 `-i` 连响应头一起打出来，再重定向到文件即可：
+
 ```bash
-npm run test:codex-login-proxy -- --api-key 你的sk --prompt '1+1 等于几？只回答结果。' --raw
+curl -i http://127.0.0.1:8787/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer 你的sk' \
+  -d '{"model":"gpt-5","stream":true,"messages":[{"role":"user","content":"1+1 等于几？只回答结果。"}]}' \
+  > proxy-raw.log 2>&1
 ```
 
-这会把：
+### 看后端日志
 
-- 响应头
-- 原始 body
-- 请求元数据
-
-都落到本地文件，方便继续排查。
+调试构建会启用 `tauri-plugin-log`，账号挑选、刷新、切号失败等都会打到应用日志里。
+反代自身的最近一次错误也会通过 `ApiProxyStatus.lastError` 显示在面板上。
 
 ## 23. 通过 CC Switch 接入 Codex
 

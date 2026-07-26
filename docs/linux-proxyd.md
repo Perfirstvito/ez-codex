@@ -2,18 +2,18 @@
 
 `codex-tools-proxyd` 是从桌面端本地反代里拆出来的独立代理进程，目标是给后续“远程 Linux 服务器部署 + 桌面端管理”打基础。
 
-当前阶段已经支持：
+当前支持：
 
 - 独立启动 `/v1` 代理
 - 复用现有 Codex 上游转发逻辑
 - 复用 `accounts.json` 和固定 `api-proxy.key` 持久化
 - 启动时可选自动把当前 `~/.codex/auth.json` 导入到账号池
+- 桌面端「API 反代 → 远程服务器」里的服务器管理 UI
+- SSH 一键部署（交叉编译 + 上传 + 安装 systemd 服务 + 启停与日志查看）
 
-当前阶段还没有接入：
-
-- 桌面端里的远程服务器管理 UI
-- SSH 一键部署
-- systemd 自动安装
+桌面端一键部署走的是 `src-tauri/src/remote_service.rs`，
+会依次尝试 `cross` / `cargo zigbuild` / `cargo build --target`，
+本文下面的手工编译流程主要用于自己在 Linux 上直接构建。
 
 ## 编译
 
@@ -79,5 +79,11 @@ daemon 会在 `data-dir` 下维护：
 
 ## 说明
 
-这个 daemon 目前只是把现有本地代理核心拆成了一个可独立运行的服务。
-下一步才是在桌面端增加“远程服务器”配置、SSH 部署和状态管理。
+这个 daemon 和桌面端本地反代共用同一套核心逻辑
+（`src-tauri/src/proxy_service.rs`），区别只在于没有 Tauri 窗口和托盘。
+反代本身的协议转换、账号挑选与切号规则见 [api-proxy.md](api-proxy.md)。
+
+注意启动时的账号同步语义和桌面端不同：
+
+- 桌面端启动时只对齐已入库账号，不会自动把陌生登录态写进账号池
+- `proxyd` 默认允许导入（无人值守场景需要），可用 `--no-sync-current-auth` 关掉
