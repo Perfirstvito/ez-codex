@@ -49,11 +49,17 @@ pub(crate) fn save_store(app: &AppHandle, store: &AccountsStore) -> Result<(), S
     save_store_to_path(&account_store_path(app)?, store)
 }
 
-/// 启动时自动同步当前登录账号：
-/// 若本机已有 `~/.codex/auth.json` 且相同“账号 + 套餐态”不在列表中，则自动写入存储。
+/// 启动时对齐当前登录账号。
+///
+/// 桌面端故意不自动新增陌生账号。当前 `~/.codex/auth.json` 可能来自用户临时切换、
+/// 已失效登录态或开发预览隔离目录，启动时悄悄入库会造成 unknown/无用量账号反复出现。
+/// 若用户确实想把当前 Codex 登录态加入账号池，应使用显式导入入口。
 #[cfg(feature = "desktop")]
 pub(crate) fn sync_current_auth_account_on_startup(app: &AppHandle) -> Result<(), String> {
-    sync_current_auth_account_on_startup_in_path(&account_store_path(app)?)
+    sync_current_auth_account_on_startup_in_path(
+        &account_store_path(app)?,
+        StartupAuthSync::AlignOnly,
+    )
 }
 
 pub(crate) fn load_store_from_path(path: &Path) -> Result<AccountsStore, String> {
@@ -126,12 +132,30 @@ pub(crate) fn save_store_to_path(path: &Path, store: &AccountsStore) -> Result<(
     write_store_file(path, store)
 }
 
-pub(crate) fn sync_current_auth_account_on_startup_in_path(path: &Path) -> Result<(), String> {
-    let auth_json = match read_current_codex_auth_optional()? {
-        Some(value) => value,
-        None => return Ok(()),
-    };
+/// 启动时如何处理尚未入库的当前 Codex 登录态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StartupAuthSync {
+    /// 只对齐已入库账号，陌生登录态一律跳过。
+    AlignOnly,
+    /// 允许把陌生登录态导入账号池，供 proxyd 无人值守场景使用。
+    AllowImport,
+}
 
+pub(crate) fn sync_current_auth_account_on_startup_in_path(
+    path: &Path,
+    mode: StartupAuthSync,
+) -> Result<(), String> {
+    let Some(auth_json) = read_current_codex_auth_optional()? else {
+        return Ok(());
+    };
+    sync_known_current_auth_account_on_startup_in_path(path, auth_json, mode)
+}
+
+fn sync_known_current_auth_account_on_startup_in_path(
+    path: &Path,
+    auth_json: Value,
+    mode: StartupAuthSync,
+) -> Result<(), String> {
     let extracted = match extract_auth(&auth_json) {
         Ok(value) => value,
         Err(err) => {
@@ -151,6 +175,11 @@ pub(crate) fn sync_current_auth_account_on_startup_in_path(path: &Path) -> Resul
         .iter()
         .any(|account| account.variant_key() == extracted_variant_key);
     if already_exists {
+        return Ok(());
+    }
+
+    if mode == StartupAuthSync::AlignOnly {
+        log::info!("跳过启动自动导入未入库的当前 Codex 账号");
         return Ok(());
     }
 
@@ -805,12 +834,16 @@ mod tests {
     use super::load_store_from_path;
     use super::refresh_account_group_auth_tokens_in_path;
     use super::save_store_to_path;
+    use super::sync_known_current_auth_account_on_startup_in_path;
     use super::update_account_group_refresh_state_if_auth_matches_in_path;
+    use super::StartupAuthSync;
     use super::LAST_GOOD_BACKUP_FILE_NAME;
     use super::PREVIOUS_GOOD_BACKUP_FILE_NAME;
     use crate::models::AccountSourceKind;
     use crate::models::AccountsStore;
     use crate::models::StoredAccount;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
     use serde_json::json;
     use std::fs;
     use std::path::PathBuf;
@@ -858,6 +891,41 @@ mod tests {
             }],
             settings: Default::default(),
         }
+    }
+
+    fn fake_chatgpt_auth(
+        principal_id: &str,
+        email: &str,
+        account_id: &str,
+        plan_type: Option<&str>,
+    ) -> serde_json::Value {
+        let mut auth_claim = json!({
+            "chatgpt_account_id": account_id,
+            "chatgpt_user_id": principal_id,
+        });
+        if let Some(plan_type) = plan_type {
+            auth_claim["chatgpt_plan_type"] = json!(plan_type);
+        }
+
+        let claims = json!({
+            "email": email,
+            "sub": principal_id,
+            "https://api.openai.com/auth": auth_claim,
+        });
+        let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"none"}"#);
+        let payload =
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).expect("serialize claims"));
+        let id_token = format!("{header}.{payload}.signature");
+
+        json!({
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "access_token": "access-token",
+                "id_token": id_token,
+                "refresh_token": "refresh-token",
+                "account_id": account_id,
+            },
+        })
     }
 
     #[test]
@@ -963,6 +1031,62 @@ mod tests {
             loaded.accounts[0].principal_id.as_deref(),
             Some("legacy@example.com")
         );
+    }
+
+    #[test]
+    fn startup_sync_does_not_add_unstored_current_auth_account() {
+        let dir = temp_dir();
+        let store_path = dir.join("accounts.json");
+        save_store_to_path(&store_path, &sample_store("stored", "workspace-1", 10))
+            .expect("save store");
+
+        let current_auth = fake_chatgpt_auth(
+            "stranger@example.com",
+            "stranger@example.com",
+            "workspace-2",
+            None,
+        );
+        sync_known_current_auth_account_on_startup_in_path(
+            &store_path,
+            current_auth,
+            StartupAuthSync::AlignOnly,
+        )
+        .expect("startup sync");
+
+        let loaded = load_store_from_path(&store_path).expect("load store");
+
+        assert_eq!(loaded.accounts.len(), 1);
+        assert_eq!(loaded.accounts[0].label, "stored");
+        assert_eq!(loaded.accounts[0].account_id, "workspace-1");
+    }
+
+    #[test]
+    fn startup_sync_imports_unstored_current_auth_account_when_allowed() {
+        let dir = temp_dir();
+        let store_path = dir.join("accounts.json");
+        save_store_to_path(&store_path, &sample_store("stored", "workspace-1", 10))
+            .expect("save store");
+
+        let current_auth = fake_chatgpt_auth(
+            "stranger@example.com",
+            "stranger@example.com",
+            "workspace-2",
+            None,
+        );
+        sync_known_current_auth_account_on_startup_in_path(
+            &store_path,
+            current_auth,
+            StartupAuthSync::AllowImport,
+        )
+        .expect("startup sync");
+
+        let loaded = load_store_from_path(&store_path).expect("load store");
+
+        assert_eq!(loaded.accounts.len(), 2);
+        assert!(loaded
+            .accounts
+            .iter()
+            .any(|account| account.account_id == "workspace-2"));
     }
 
     #[test]

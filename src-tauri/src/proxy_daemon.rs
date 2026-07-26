@@ -11,6 +11,7 @@ use crate::proxy_service::stop_api_proxy_with_runtime;
 use crate::state::ApiProxyRuntimeHandle;
 use crate::store::account_store_path_from_data_dir;
 use crate::store::sync_current_auth_account_on_startup_in_path;
+use crate::store::StartupAuthSync;
 
 #[derive(Debug, Clone)]
 pub struct ProxyDaemonOptions {
@@ -43,7 +44,7 @@ pub async fn run_proxy_daemon(options: ProxyDaemonOptions) -> Result<(), String>
 
     if options.sync_current_auth {
         let store_path = account_store_path_from_data_dir(&options.data_dir);
-        sync_current_auth_account_on_startup_in_path(&store_path)?;
+        sync_current_auth_account_on_startup_in_path(&store_path, StartupAuthSync::AllowImport)?;
     }
 
     let storage = new_proxy_storage_context(
